@@ -1,4 +1,12 @@
-cp_avertage.txt
+cp_average.txt
 cp_output.txt
 cp_traj.xyz
+a_average.txt
+a_output.txt
+a_traj.xyz
+0_average.txt
+0_output.txt
+0_traj.xyz
+perf.data
+perf.data.old
 md
