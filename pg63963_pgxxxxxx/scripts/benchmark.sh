@@ -1,4 +1,3 @@
-
 #!/bin/bash
 #SBATCH -A f202500010hpcvlabuminhoa
 #SBATCH -p normal-arm
@@ -14,9 +13,6 @@ set -uo pipefail
 # ============================================================
 # Configuração
 # ============================================================
-
-# Número de repetições por configuração.
-# Pode ser passado como argumento: sbatch benchmark_threads.sh 5
 REPEATS="${1:-3}"
 
 THREADS=(1 2 4 8 16 32 48)
@@ -26,7 +22,10 @@ INPUT="inputdata.txt"
 EXECUTABLE="md"
 REFERENCE="reference.csv"
 
-EVENTS="cycles,instructions,branches,branch-misses,L1-dcache-loads,L1-dcache-load-misses"
+# Grupo 1: FLOPs e tempo (para o eixo Y do roofline)
+EVENTS_FLOPS="task-clock,cycles,instructions,fp_dp_fixed_ops_spec,fp_fma_spec"
+# Grupo 2: memória e branches (para o eixo X do roofline)
+EVENTS_MEM="br_pred,br_mis_pred,L1-dcache-loads,L1-dcache-load-misses,l2d_cache_refill"
 
 BASE_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 cd "$BASE_DIR" || exit 1
@@ -47,44 +46,19 @@ export OMP_PLACES=cores
 # ============================================================
 # Verificações
 # ============================================================
-
 if ! [[ "$REPEATS" =~ ^[1-9][0-9]*$ ]]; then
     echo "Erro: o número de repetições deve ser um inteiro positivo."
-    echo "Uso: sbatch benchmark_threads.sh 5"
     exit 1
 fi
-
-if [[ ! -f "$INPUT" ]]; then
-    echo "Erro: não encontrei $INPUT"
-    exit 1
-fi
-
-if [[ ! -f "$REFERENCE" ]]; then
-    echo "Erro: não encontrei $REFERENCE"
-    exit 1
-fi
-
-if ! command -v perf >/dev/null 2>&1; then
-    echo "Erro: perf não está disponível."
-    exit 1
-fi
-
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "Erro: python3 não está disponível."
-    exit 1
-fi
+[[ -f "$INPUT" ]]     || { echo "Erro: não encontrei $INPUT"; exit 1; }
+[[ -f "$REFERENCE" ]] || { echo "Erro: não encontrei $REFERENCE"; exit 1; }
+command -v perf    >/dev/null || { echo "Erro: perf não disponível."; exit 1; }
+command -v python3 >/dev/null || { echo "Erro: python3 não disponível."; exit 1; }
 
 if [[ -f Makefile ]]; then
-    if ! make md; then
-        echo "Erro de compilação."
-        exit 1
-    fi
+    make md || { echo "Erro de compilação."; exit 1; }
 fi
-
-if [[ ! -x "./$EXECUTABLE" ]]; then
-    echo "Erro: ./$EXECUTABLE não existe ou não é executável."
-    exit 1
-fi
+[[ -x "./$EXECUTABLE" ]] || { echo "Erro: ./$EXECUTABLE não é executável."; exit 1; }
 
 EXEC_ABS="$BASE_DIR/$EXECUTABLE"
 INPUT_ABS="$BASE_DIR/$INPUT"
@@ -97,260 +71,226 @@ echo "Job: $JOB_ID"
 echo "CPUs atribuídas: ${SLURM_CPUS_PER_TASK:-desconhecido}"
 echo "Threads: ${THREADS[*]}"
 echo "Repetições por configuração: $REPEATS"
-echo "Total máximo de execuções: $(( ${#THREADS[@]} * REPEATS ))"
-echo
 
-# O CSV bruto guarda todas as repetições.
+# CSV bruto: todas as repetições (só perf; averages só validam)
 echo "threads,repeat,kind,metric,value" > "$RAW_RESULTS"
-
-# O CSV final guarda a média, desvio-padrão e número de amostras.
-# A coluna value contém a média para manter compatibilidade
-# com o plot_results.gp anterior.
+# CSV final: médias
 echo "threads,kind,metric,value,samples,stdev" > "$RESULTS"
 
 echo "Benchmark iniciado." > "$STATUS"
 
 # ============================================================
-# Agregação: gera results.csv mesmo que o job falhe a meio
+# Executa uma corrida do md com um grupo de eventos perf
 # ============================================================
+run_perf_group() {
+    local group=$1 events=$2 run_dir=$3
+    local perf_file="$OUTDIR/perf/perf_${group}_t${NTHREADS}_r${REP}.csv"
 
-finalize_results() {
-    local rc=$?
-    trap - EXIT
-
-    python3 - "$RAW_RESULTS" "$RESULTS" <<'PY'
-import csv
-import math
-import statistics
-import sys
-from collections import defaultdict
-
-raw_file, output_file = sys.argv[1:3]
-groups = defaultdict(list)
-
-with open(raw_file, newline="") as f:
-    for row in csv.DictReader(f):
-        try:
-            key = (
-                int(row["threads"]),
-                row["kind"],
-                row["metric"],
-            )
-            value = float(row["value"])
-            if math.isfinite(value):
-                groups[key].append(value)
-        except (ValueError, KeyError):
-            continue
-
-with open(output_file, "w", newline="") as f:
-    writer = csv.writer(f)
-    writer.writerow([
-        "threads", "kind", "metric", "value", "samples", "stdev"
-    ])
-
-    for (threads, kind, metric), values in sorted(groups.items()):
-        mean = statistics.fmean(values)
-        stdev = statistics.stdev(values) if len(values) > 1 else 0.0
-
-        writer.writerow([
-            threads,
-            kind,
-            metric,
-            f"{mean:.12g}",
-            len(values),
-            f"{stdev:.12g}",
-        ])
-
-print(f"CSV agregado: {output_file}")
-PY
-
-    exit "$rc"
+    mkdir -p "$run_dir"
+    (
+        cd "$run_dir" &&
+        srun --cpu-bind=cores \
+            perf stat -x, -o "$perf_file" \
+            -e "$events" \
+            -- env \
+                OMP_NUM_THREADS="$NTHREADS" \
+                OMP_DYNAMIC=FALSE \
+                OMP_PROC_BIND=close \
+                OMP_PLACES=cores \
+                "$EXEC_ABS" \
+                < "$INPUT_ABS" \
+                > "$run_dir/stdout.txt" \
+                2> "$run_dir/stderr.txt"
+    )
 }
 
-trap finalize_results EXIT
+# Regista os contadores de um ficheiro perf no CSV bruto
+parse_perf_csv() {
+    local perf_file=$1 expected=$2
+    python3 - "$perf_file" "$NTHREADS" "$REP" "$RAW_RESULTS" "$expected" <<'PY'
+import csv, math, sys
 
-# ============================================================
-# Execuções
-# ============================================================
-
-for NTHREADS in "${THREADS[@]}"; do
-    if (( NTHREADS > MAX_THREADS )); then
-        continue
-    fi
-
-    for REP in $(seq 1 "$REPEATS"); do
-        RUN_DIR="$OUTDIR/outputs/threads_${NTHREADS}/rep_${REP}"
-        mkdir -p "$RUN_DIR"
-
-        OUTPUT="$RUN_DIR/stdout.txt"
-        STDERR_LOG="$RUN_DIR/stderr.txt"
-        AVERAGE="$RUN_DIR/cp_average.txt"
-        PERF_FILE="$OUTDIR/perf/perf_t${NTHREADS}_r${REP}.csv"
-
-        echo
-        echo "================================================"
-        echo "Threads: $NTHREADS | Repetição: $REP/$REPEATS"
-        echo "================================================"
-
-        if ! (
-            cd "$RUN_DIR" &&
-            srun --cpu-bind=cores \
-                perf stat -x, -o "$PERF_FILE" \
-                -e "$EVENTS" \
-                -- env \
-                    OMP_NUM_THREADS="$NTHREADS" \
-                    OMP_DYNAMIC=FALSE \
-                    OMP_PROC_BIND=close \
-                    OMP_PLACES=cores \
-                    "$EXEC_ABS" \
-                    < "$INPUT_ABS" \
-                    > "$OUTPUT" \
-                    2> "$STDERR_LOG"
-        ); then
-            echo "ERRO: execução falhou com $NTHREADS threads, repetição $REP."
-            echo "Execução falhou: threads=$NTHREADS, repetição=$REP" > "$STATUS"
-            exit 1
-        fi
-
-        if [[ ! -f "$AVERAGE" ]]; then
-            echo "ERRO: $AVERAGE não foi produzido."
-            echo "cp_average.txt em falta: threads=$NTHREADS, repetição=$REP" > "$STATUS"
-            exit 1
-        fi
-
-        # ----------------------------------------------------
-        # Registar contadores perf desta repetição.
-        # ----------------------------------------------------
-        python3 - "$PERF_FILE" "$NTHREADS" "$REP" "$RAW_RESULTS" <<'PY'
-import csv
-import math
-import sys
-
-perf_file, threads, repeat, raw_file = sys.argv[1:5]
-
-expected_events = {
-    "cycles",
-    "instructions",
-    "branches",
-    "branch-misses",
-    "L1-dcache-loads",
-    "L1-dcache-load-misses",
-}
+perf_file, threads, repeat, raw_file, expected = sys.argv[1:6]
+expected = set(expected.split(","))
 
 with open(perf_file, newline="", errors="replace") as f:
     rows = list(csv.reader(f))
 
 with open(raw_file, "a", newline="") as f:
     writer = csv.writer(f)
-
     for row in rows:
         if len(row) < 3:
             continue
-
         event = row[2].strip()
-        raw_value = row[0].strip()
-
-        if event not in expected_events:
+        if event not in expected:
             continue
-
         try:
-            value = float(raw_value.replace(" ", ""))
+            value = float(row[0].strip().replace(" ", ""))
         except ValueError:
-            print(f"Aviso: perf não forneceu um valor numérico para {event}.")
             continue
+        if math.isfinite(value):
+            writer.writerow([threads, repeat, "perf", event, value])
+PY
+}
 
-        if not math.isfinite(value):
+# ============================================================
+# Agregação final (também gera roofline.csv)
+# ============================================================
+finalize_results() {
+    local rc=$?
+    trap - EXIT
+
+    python3 - "$RAW_RESULTS" "$RESULTS" <<'PY'
+import csv, math, statistics, sys
+from collections import defaultdict
+
+raw_file, output_file = sys.argv[1:3]
+
+rows_all = []
+per_run = defaultdict(dict)
+
+with open(raw_file, newline="") as f:
+    for row in csv.DictReader(f):
+        try:
+            t = int(row["threads"]); r = int(row["repeat"])
+            k = row["kind"]; m = row["metric"]; v = float(row["value"])
+        except (ValueError, KeyError):
             continue
+        rows_all.append((t, r, k, m, v))
+        if k == "perf":
+            per_run[(t, r)][m] = v
 
-        writer.writerow([threads, repeat, "perf", event, value])
+# Métrica derivada FLOPs (por repetição).
+# NOTA: flops = dp_ops + 2*fma — confirmar com o kernel de calibração.
+# Não são calculadas intensidade aritmética nem métricas de roofline.
+for (t, r), d in per_run.items():
+    need = ("fp_dp_fixed_ops_spec", "fp_fma_spec")
+    if not all(m in d for m in need):
+        continue
+    flops = d["fp_dp_fixed_ops_spec"] + 2.0 * d["fp_fma_spec"]
+    rows_all.append((t, r, "derived", "FLOPs", flops))
+
+# Agregação por threads
+groups = defaultdict(list)
+for t, r, k, m, v in rows_all:
+    if math.isfinite(v):
+        groups[(t, k, m)].append(v)
+
+with open(output_file, "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["threads", "kind", "metric", "value", "samples", "stdev"])
+    for (t, k, m), vs in sorted(groups.items()):
+        mean = statistics.fmean(vs)
+        sd = statistics.stdev(vs) if len(vs) > 1 else 0.0
+        w.writerow([t, k, m, f"{mean:.12g}", len(vs), f"{sd:.12g}"])
+
+
 PY
 
-        # ----------------------------------------------------
-        # Ler cp_average.txt, guardar os campos e validar.
-        # Total Time (s) é registado, mas não é validado.
-        # ----------------------------------------------------
-        if ! python3 - \
-            "$AVERAGE" "$REFERENCE_ABS" "$NTHREADS" "$REP" "$RAW_RESULTS" <<'PY'
-import csv
-import math
-import sys
+    exit "$rc"
+}
+trap finalize_results EXIT
 
-average_file, reference_file, threads, repeat, raw_file = sys.argv[1:6]
+# ============================================================
+# Execuções
+# ============================================================
+for NTHREADS in "${THREADS[@]}"; do
+    if (( NTHREADS > MAX_THREADS )); then
+        continue
+    fi
+
+    for REP in $(seq 1 "$REPEATS"); do
+        echo
+        echo "================================================"
+        echo "Threads: $NTHREADS | Repetição: $REP/$REPEATS"
+        echo "================================================"
+
+        # Corrida 1: FLOPs + tempo
+        RUN1="$OUTDIR/outputs/threads_${NTHREADS}/rep_${REP}/flops"
+        if ! run_perf_group flops "$EVENTS_FLOPS" "$RUN1"; then
+            echo "ERRO: execução (flops) falhou: t=$NTHREADS r=$REP"
+            echo "Execução falhou: t=$NTHREADS r=$REP" > "$STATUS"
+            exit 1
+        fi
+        parse_perf_csv "$OUTDIR/perf/perf_flops_t${NTHREADS}_r${REP}.csv" \
+            "$EVENTS_FLOPS,seconds elapsed"
+
+        # Corrida 2: memória + branches (é a que valida os resultados)
+        RUN2="$OUTDIR/outputs/threads_${NTHREADS}/rep_${REP}/mem"
+        if ! run_perf_group mem "$EVENTS_MEM" "$RUN2"; then
+            echo "ERRO: execução (mem) falhou: t=$NTHREADS r=$REP"
+            echo "Execução falhou: t=$NTHREADS r=$REP" > "$STATUS"
+            exit 1
+        fi
+        parse_perf_csv "$OUTDIR/perf/perf_mem_t${NTHREADS}_r${REP}.csv" "$EVENTS_MEM"
+
+        AVERAGE="$RUN2/cp_average.txt"
+        if [[ ! -f "$AVERAGE" ]]; then
+            echo "ERRO: $AVERAGE não foi produzido."
+            echo "cp_average.txt em falta: t=$NTHREADS r=$REP" > "$STATUS"
+            exit 1
+        fi
+
+        # ----------------------------------------------------
+        # Validar cp_average.txt (NÃO guarda no CSV)
+        # ----------------------------------------------------
+        if ! python3 - "$AVERAGE" "$REFERENCE_ABS" "$NTHREADS" "$REP" <<'PY'
+import csv, math, sys
+
+average_file, reference_file, threads, repeat = sys.argv[1:5]
 
 names = [
-    "Total Time (s)",
-    "T (K)",
-    "P (Pa)",
-    "PV/nT (J/(mol K))",
-    "Z",
-    "V (m^3)",
-    "N",
+    "Total Time (s)", "T (K)", "P (Pa)", "PV/nT (J/(mol K))",
+    "Z", "V (m^3)", "N",
 ]
 
 numeric_rows = []
-
 with open(average_file, errors="replace") as f:
     for line in f:
         tokens = line.split()
         if len(tokens) != 7:
             continue
         try:
-            row = [float(token) for token in tokens]
+            numeric_rows.append([float(t) for t in tokens])
         except ValueError:
             continue
-        numeric_rows.append(row)
 
 if not numeric_rows:
-    print("ERRO: não encontrei uma linha com 7 valores numéricos.", file=sys.stderr)
+    print("ERRO: não encontrei linha com 7 valores numéricos.", file=sys.stderr)
     sys.exit(2)
 
 values = numeric_rows[-1]
-
-with open(raw_file, "a", newline="") as f:
-    writer = csv.writer(f)
-    for name, value in zip(names, values):
-        writer.writerow([threads, repeat, "output", name, value])
+index = {name: i for i, name in enumerate(names)}
 
 references = {}
 with open(reference_file, newline="") as f:
     for row in csv.DictReader(f):
-        field = row["field"].strip()
-        references[field] = (
-            float(row["expected"]),
-            float(row["tolerance"]),
+        references[row["field"].strip()] = (
+            float(row["expected"]), float(row["tolerance"]),
         )
 
-index = {name: i for i, name in enumerate(names)}
 failures = []
-
 for field, (expected, tolerance) in references.items():
-    # O tempo não participa na validação.
     if field == "Total Time (s)":
         continue
-
     if field not in index:
-        print(f"ERRO: campo desconhecido na referência: {field}", file=sys.stderr)
+        print(f"ERRO: campo desconhecido: {field}", file=sys.stderr)
         sys.exit(2)
-
     actual = values[index[field]]
-
     if not math.isfinite(actual) or abs(actual - expected) > tolerance:
         failures.append((field, actual, expected, tolerance))
 
 if failures:
-    print(f"\nFALHA: threads={threads}, repetição={repeat}")
-    for field, actual, expected, tolerance in failures:
-        print(
-            f"  {field}: obtido={actual:.12g}, "
-            f"esperado={expected:.12g}, tolerância={tolerance:.12g}"
-        )
+    print(f"FALHA: threads={threads}, repetição={repeat}")
+    for field, actual, expected, tol in failures:
+        print(f"  {field}: obtido={actual:.12g}, esperado={expected:.12g}, tol={tol:.12g}")
     sys.exit(1)
 
 print(f"Validação OK: threads={threads}, repetição={repeat}")
 PY
         then
-            echo "ERRO: validação falhou com $NTHREADS threads, repetição $REP."
-            echo "Validação falhou: threads=$NTHREADS, repetição=$REP" > "$STATUS"
+            echo "ERRO: validação falhou: t=$NTHREADS r=$REP"
+            echo "Validação falhou: t=$NTHREADS r=$REP" > "$STATUS"
             exit 1
         fi
     done
@@ -360,5 +300,4 @@ echo "Todas as execuções passaram na validação." > "$STATUS"
 echo
 echo "Benchmark concluído com sucesso."
 echo "Resultados médios: $RESULTS"
-echo "Resultados individuais: $RAW_RESULTS"
 echo "Estado: $STATUS"

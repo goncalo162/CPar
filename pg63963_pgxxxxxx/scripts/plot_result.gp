@@ -1,124 +1,92 @@
-
 # Uso:
-#   gnuplot -e "csvfile='results.csv'; format='png'" plot_results.gp
-#   gnuplot -e "csvfile='results.csv'; format='latex'" plot_results.gp
-#
-# O CSV deve ter as colunas:
-# threads,kind,metric,value
+#   gnuplot -e "csvfile='results.csv'" plot_results.gp
+# Gera todos os PNGs em plots/ e um único PDF com todos os gráficos.
 
-if (!exists("csvfile")) csvfile = "results.csv"
-if (!exists("outdir")) outdir = "plots"
-if (!exists("format")) format = "png"
-
-if (format ne "png" && format ne "latex") {
-    print "Erro: format deve ser png ou latex"
-    exit
-}
-
-system("mkdir -p '" . outdir . "'")
+if (!exists("csvfile"))  csvfile  = "results.csv"
+if (!exists("outdir"))   outdir   = "plots"
 
 set datafile separator ","
 set datafile columnheaders
 set grid
 set border linewidth 1.2
+set pointsize 1.2
+set lmargin 12
+set rmargin 4
+set tmargin 3
+set bmargin 4
 set xlabel "Número de threads"
-set ylabel "Valor"
 set xtics (1, 2, 4, 8, 16, 32, 48)
 set format x "%g"
 set logscale x 2
-set key off
-set pointsize 1.2
-set lmargin 12
-set rmargin 3
-set tmargin 3
-set bmargin 4
+set key top left
 
-if (format eq "png") {
-    set terminal pngcairo size 1200,750 enhanced font "Arial,12"
-    extension = ".png"
-} else {
-    # Gera ficheiros LaTeX autónomos com o terminal TikZ do Gnuplot.
-    set terminal tikz standalone size 12cm,7cm
-    extension = ".tex"
+# ------------------------------------------------------------
+# Definição dos gráficos (m2 vazio => série única)
+# ------------------------------------------------------------
+NCH = 6
+array ch_title[NCH]
+array ch_ylabel[NCH]
+array ch_file[NCH]
+array ch_kind1[NCH]
+array ch_metric1[NCH]
+array ch_kind2[NCH]
+array ch_metric2[NCH]
+array ch_logy[NCH]
+
+ch_title[1]="Instruções";             ch_ylabel[1]="Instruções"
+ch_file[1]="instructions";           ch_kind1[1]="perf"; ch_metric1[1]="instructions"
+ch_kind2[1]=""; ch_metric2[1]="";    ch_logy[1]=1
+
+ch_title[2]="Ciclos";                ch_ylabel[2]="Ciclos"
+ch_file[2]="cycles";                ch_kind1[2]="perf"; ch_metric1[2]="cycles"
+ch_kind2[2]=""; ch_metric2[2]="";    ch_logy[2]=1
+
+ch_title[3]="L1: loads vs misses";   ch_ylabel[3]="Acessos"
+ch_file[3]="l1_loads_vs_misses";     ch_kind1[3]="perf"; ch_metric1[3]="L1-dcache-loads"
+ch_kind2[3]="perf"; ch_metric2[3]="L1-dcache-load-misses"; ch_logy[3]=1
+
+ch_title[4]="Branches: pred vs miss"; ch_ylabel[4]="Branches"
+ch_file[4]="branch_pred_vs_miss";    ch_kind1[4]="perf"; ch_metric1[4]="br_pred"
+ch_kind2[4]="perf"; ch_metric2[4]="br_mis_pred"; ch_logy[4]=1
+
+ch_title[5]="FLOPs";                 ch_ylabel[5]="FLOPs"
+ch_file[5]="flops";                  ch_kind1[5]="derived"; ch_metric1[5]="FLOPs"
+ch_kind2[5]=""; ch_metric2[5]="";    ch_logy[5]=1
+
+ch_title[6]="Tempo de execução";     ch_ylabel[6]="Segundos"
+ch_file[6]="elapsed";                ch_kind1[6]="perf"; ch_metric1[6]="seconds elapsed"
+ch_kind2[6]=""; ch_metric2[6]="";    ch_logy[6]=0
+
+# ------------------------------------------------------------
+# Passada 1: PNGs individuais
+# Passada 2: um único PDF multi-página (charts.pdf)
+# ------------------------------------------------------------
+do for [f=1:2] {
+    if (f == 1) {
+        set terminal pngcairo size 1200,750 enhanced font "Arial,12"
+    } else {
+        set terminal pdfcairo size 12in,7.5in enhanced color solid font ",12"
+        set output outdir . "/charts.pdf"
+    }
+
+    do for [i=1:NCH] {
+        if (f == 1) { set output outdir . "/" . ch_file[i] . ".png" }
+        set title ch_title[i]
+        set ylabel ch_ylabel[i]
+        if (ch_logy[i]) { set logscale y } else { unset logscale y }
+
+        plot \
+            csvfile using \
+                (strcol(2) eq ch_kind1[i] && strcol(3) eq ch_metric1[i] ? \
+                 real(column(1)) : 1/0):4 \
+                with linespoints linewidth 2 pointtype 7 title ch_metric1[i], \
+            csvfile using \
+                (strcol(2) eq ch_kind2[i] && strcol(3) eq ch_metric2[i] ? \
+                 real(column(1)) : 1/0):4 \
+                with linespoints linewidth 2 pointtype 5 title ch_metric2[i]
+    }
 }
 
-# ------------------------------------------------------------
-# Gráficos do output
-# ------------------------------------------------------------
-array out_metric[7]
-array out_file[7]
-
-out_metric[1] = "Total Time (s)"
-out_file[1] = "output_Total_Time_s"
-
-out_metric[2] = "T (K)"
-out_file[2] = "output_T_K"
-
-out_metric[3] = "P (Pa)"
-out_file[3] = "output_P_Pa"
-
-out_metric[4] = "PV/nT (J/(mol K))"
-out_file[4] = "output_PV_nT_J_per_mol_K"
-
-out_metric[5] = "Z"
-out_file[5] = "output_Z"
-
-out_metric[6] = "V (m^3)"
-out_file[6] = "output_V_m3"
-
-out_metric[7] = "N"
-out_file[7] = "output_N"
-
-do for [i=1:7] {
-    metric = out_metric[i]
-    filename = outdir . "/" . out_file[i] . extension
-
-    set output filename
-    set title metric
-
-    plot csvfile using \
-        (strcol(2) eq "output" && strcol(3) eq metric ? \
-        real(column(1)) : 1/0):4 \
-        with linespoints linewidth 2 pointtype 7
-    unset output
-}
-
-# ------------------------------------------------------------
-# Gráficos de perf
-# ------------------------------------------------------------
-array perf_metric[6]
-array perf_file[6]
-
-perf_metric[1] = "cycles"
-perf_file[1] = "perf_cycles"
-
-perf_metric[2] = "instructions"
-perf_file[2] = "perf_instructions"
-
-perf_metric[3] = "branches"
-perf_file[3] = "perf_branches"
-
-perf_metric[4] = "branch-misses"
-perf_file[4] = "perf_branch-misses"
-
-perf_metric[5] = "L1-dcache-loads"
-perf_file[5] = "perf_L1-dcache-loads"
-
-perf_metric[6] = "L1-dcache-load-misses"
-perf_file[6] = "perf_L1-dcache-load-misses"
-
-do for [i=1:6] {
-    metric = perf_metric[i]
-    filename = outdir . "/" . perf_file[i] . extension
-
-    set output filename
-    set title metric
-
-    plot csvfile using \
-        (strcol(2) eq "perf" && strcol(3) eq metric ? \
-        real(column(1)) : 1/0):4 \
-        with linespoints linewidth 2 pointtype 7
-    unset output
-}
-
-print "Gráficos gerados em: " . outdir
+unset output
+print "PNGs gerados em: " . outdir
+print "PDF único: " . outdir . "/charts.pdf"
