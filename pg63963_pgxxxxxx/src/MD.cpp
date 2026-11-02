@@ -177,8 +177,8 @@ int main(void)
                 i * dt * timefac, Temp, Press, KE, PE, KE + PE);
     }
 
-    Pavg /= (NumTime + 1);
-    Tavg /= (NumTime + 1);
+    Pavg /= NumTime;
+    Tavg /= NumTime;
     Z = Pavg * (Vol * VolFac) / (N * kBSI * Tavg);
     gc = NA * Pavg * (Vol * VolFac) / (N * Tavg);
 
@@ -270,7 +270,7 @@ double Potential(void)
         }
         Pot += sum_i;
     }
-    return Pot;
+    return 2.0 * Pot; //O original conta cada par duas vezes, multiplicar para comparar
 }
 
 
