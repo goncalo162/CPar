@@ -18,8 +18,8 @@ double kBSI = 1.38064852e-23;
 double L, Tinit;
 
 double rx[MAXPART], ry[MAXPART], rz[MAXPART];
-double v[MAXPART][3];
-double a[MAXPART][3];
+double vx[MAXPART], vy[MAXPART], vz[MAXPART];
+double ax[MAXPART], ay[MAXPART], az[MAXPART];
 
 char atype[10];
 
@@ -224,16 +224,17 @@ void initialize(void)
 
 double MeanSquaredVelocity(void)
 {
-    double vx2 = 0.0, vy2 = 0.0, vz2 = 0.0;
+    double sx = 0.0, sy = 0.0, sz = 0.0;
 
-    #pragma omp parallel for reduction(+:vx2,vy2,vz2) schedule(static)
+    #pragma omp parallel for reduction(+:sx,sy,sz) schedule(static)
     for (int i = 0; i < N; i++) {
-        vx2 += v[i][0] * v[i][0];
-        vy2 += v[i][1] * v[i][1];
-        vz2 += v[i][2] * v[i][2];
+        sx += vx[i] * vx[i];
+        sy += vy[i] * vy[i];
+        sz += vz[i] * vz[i];
     }
-    return (vx2 + vy2 + vz2) / N;
+    return (sx + sy + sz) / N;
 }
+
 
 double Kinetic(void)
 {
@@ -241,8 +242,7 @@ double Kinetic(void)
 
     #pragma omp parallel for reduction(+:kin) schedule(static)
     for (int i = 0; i < N; i++) {
-        double v2 = v[i][0]*v[i][0] + v[i][1]*v[i][1] + v[i][2]*v[i][2];
-        kin += 0.5 * m * v2;
+        kin += 0.5 * m * (vx[i]*vx[i] + vy[i]*vy[i] + vz[i]*vz[i]);
     }
     return kin;
 }
@@ -276,86 +276,38 @@ double Potential(void)
 
 void computeAccelerations(void)
 {
-    const int nthreads = omp_get_max_threads();
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < N; i++) {
+        const double xi = rx[i];
+        const double yi = ry[i];
+        const double zi = rz[i];
+        double fx = 0.0, fy = 0.0, fz = 0.0;
 
-    /* One private acceleration array per possible OpenMP thread. */
-    double *private_all = calloc(
-        (size_t)nthreads * (size_t)N * 3,
-        sizeof(double)
-    );
+        #pragma omp simd reduction(+:fx,fy,fz)
+        for (int j = 0; j < N; j++) {
+            const double dx = xi - rx[j];
+            const double dy = yi - ry[j];
+            const double dz = zi - rz[j];
 
-    if (private_all == NULL) {
-        fprintf(stderr, "Allocation failure in computeAccelerations.\n");
-        abort();
-    }
+            const double r2 = dx*dx + dy*dy + dz*dz;
+            /* seleção sem ramo: evita divisão por zero em j == i */
+            const double inv2 = (i == j) ? 0.0 : 1.0 / r2;
+            const double inv4 = inv2 * inv2;
+            const double inv8 = inv4 * inv4;
+            const double inv14 = inv8 * inv4 * inv2;
 
-    #pragma omp parallel
-    {
-        const int tid = omp_get_thread_num();
+            const double f = 24.0 * (2.0 * inv14 - inv8);
 
-        double (*local_a)[3] =
-            (double (*)[3])(private_all + (size_t)tid * N * 3);
-
-        /* Each thread accumulates forces only in its own array. */
-        #pragma omp for schedule(static)
-        for (int i = 0; i < N - 1; i++) {
-            const double xi = rx[i];
-            const double yi = ry[i];
-            const double zi = rz[i];
-
-            for (int j = i + 1; j < N; j++) {
-                const double dx = xi - rx[j];
-                const double dy = yi - ry[j];
-                const double dz = zi - rz[j];
-
-                const double r2 = dx*dx + dy*dy + dz*dz;
-                const double inv2 = 1.0 / r2;
-                const double inv4 = inv2 * inv2;
-                const double inv8 = inv4 * inv4;
-                const double inv14 = inv8 * inv4 * inv2;
-
-                const double f = 24.0 * (2.0 * inv14 - inv8);
-
-                local_a[i][0] += dx * f;
-                local_a[i][1] += dy * f;
-                local_a[i][2] += dz * f;
-
-                local_a[j][0] -= dx * f;
-                local_a[j][1] -= dy * f;
-                local_a[j][2] -= dz * f;
-            }
+            fx += dx * f;
+            fy += dy * f;
+            fz += dz * f;
         }
 
-        /*
-         * The implicit barrier above ensures all pair calculations
-         * finish before the reduction begins.
-         *
-         * Each global acceleration element is written by one thread.
-         */
-        #pragma omp for schedule(static)
-        for (int i = 0; i < N; i++) {
-            double ax = 0.0;
-            double ay = 0.0;
-            double az = 0.0;
-
-            for (int t = 0; t < nthreads; t++) {
-                const size_t base =
-                    ((size_t)t * N + i) * 3;
-
-                ax += private_all[base];
-                ay += private_all[base + 1];
-                az += private_all[base + 2];
-            }
-
-            a[i][0] = ax;
-            a[i][1] = ay;
-            a[i][2] = az;
-        }
+        ax[i] = fx;
+        ay[i] = fy;
+        az[i] = fz;
     }
-
-    free(private_all);
 }
-
 
 
 double VelocityVerlet(double dt, int iter, FILE *fp)
@@ -367,56 +319,49 @@ double VelocityVerlet(double dt, int iter, FILE *fp)
     const double half_dt = 0.5 * dt;
     const double half_dt2 = 0.5 * dt * dt;
 
-    /*
-     * First half-step:
-     * update positions and apply the first half of the velocity step.
-     */
+    /* Primeira metade do passo: posições + primeira metade das velocidades. */
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < N; i++) {
-        rx[i] += v[i][0] * dt + a[i][0] * half_dt2;
-        ry[i] += v[i][1] * dt + a[i][1] * half_dt2;
-        rz[i] += v[i][2] * dt + a[i][2] * half_dt2;
+        rx[i] += vx[i] * dt + ax[i] * half_dt2;
+        ry[i] += vy[i] * dt + ay[i] * half_dt2;
+        rz[i] += vz[i] * dt + az[i] * half_dt2;
 
-        v[i][0] += a[i][0] * half_dt;
-        v[i][1] += a[i][1] * half_dt;
-        v[i][2] += a[i][2] * half_dt;
+        vx[i] += ax[i] * half_dt;
+        vy[i] += ay[i] * half_dt;
+        vz[i] += az[i] * half_dt;
     }
 
-    /* Calculate the new accelerations at the updated positions. */
     computeAccelerations();
 
-    /*
-     * Second half-step and wall-pressure calculation.
-     * Each thread processes independent particles.
-     */
+    /* Segunda metade do passo + pressão nas paredes. */
     #pragma omp parallel for schedule(static) reduction(+:psum)
     for (int i = 0; i < N; i++) {
-        v[i][0] += a[i][0] * half_dt;
-        v[i][1] += a[i][1] * half_dt;
-        v[i][2] += a[i][2] * half_dt;
+        vx[i] += ax[i] * half_dt;
+        vy[i] += ay[i] * half_dt;
+        vz[i] += az[i] * half_dt;
 
         if (rx[i] < 0.0) {
-            v[i][0] = -v[i][0];
-            psum += 2.0 * m * fabs(v[i][0]) / dt;
+            vx[i] = -vx[i];
+            psum += 2.0 * m * fabs(vx[i]) / dt;
         } else if (rx[i] >= L) {
-            v[i][0] = -v[i][0];
-            psum += 2.0 * m * fabs(v[i][0]) / dt;
+            vx[i] = -vx[i];
+            psum += 2.0 * m * fabs(vx[i]) / dt;
         }
 
         if (ry[i] < 0.0) {
-            v[i][1] = -v[i][1];
-            psum += 2.0 * m * fabs(v[i][1]) / dt;
+            vy[i] = -vy[i];
+            psum += 2.0 * m * fabs(vy[i]) / dt;
         } else if (ry[i] >= L) {
-            v[i][1] = -v[i][1];
-            psum += 2.0 * m * fabs(v[i][1]) / dt;
+            vy[i] = -vy[i];
+            psum += 2.0 * m * fabs(vy[i]) / dt;
         }
 
         if (rz[i] < 0.0) {
-            v[i][2] = -v[i][2];
-            psum += 2.0 * m * fabs(v[i][2]) / dt;
+            vz[i] = -vz[i];
+            psum += 2.0 * m * fabs(vz[i]) / dt;
         } else if (rz[i] >= L) {
-            v[i][2] = -v[i][2];
-            psum += 2.0 * m * fabs(v[i][2]) / dt;
+            vz[i] = -vz[i];
+            psum += 2.0 * m * fabs(vz[i]) / dt;
         }
     }
 
@@ -426,29 +371,35 @@ double VelocityVerlet(double dt, int iter, FILE *fp)
 
 void initializeVelocities(void)
 {
-    double vCM[3] = {0.0, 0.0, 0.0};
+    double vCMx = 0.0, vCMy = 0.0, vCMz = 0.0;
     double vSqdSum = 0.0, lambda;
 
     for (int i = 0; i < N; i++) {
-        for (int j = 0; j < 3; j++) {
-            v[i][j] = gaussdist();
-            vCM[j] += m * v[i][j];
-        }
+        vx[i] = gaussdist();
+        vy[i] = gaussdist();
+        vz[i] = gaussdist();
+        vCMx += m * vx[i];
+        vCMy += m * vy[i];
+        vCMz += m * vz[i];
     }
 
-    for (int j = 0; j < 3; j++) vCM[j] /= N * m;
+    vCMx /= N * m;
+    vCMy /= N * m;
+    vCMz /= N * m;
 
     for (int i = 0; i < N; i++) {
-        for (int j = 0; j < 3; j++) {
-            v[i][j] -= vCM[j];
-            vSqdSum += v[i][j] * v[i][j];
-        }
+        vx[i] -= vCMx;
+        vy[i] -= vCMy;
+        vz[i] -= vCMz;
+        vSqdSum += vx[i]*vx[i] + vy[i]*vy[i] + vz[i]*vz[i];
     }
 
     lambda = sqrt(3.0 * (N - 1) * Tinit / vSqdSum);
 
     for (int i = 0; i < N; i++) {
-        for (int j = 0; j < 3; j++) v[i][j] *= lambda;
+        vx[i] *= lambda;
+        vy[i] *= lambda;
+        vz[i] *= lambda;
     }
 }
 

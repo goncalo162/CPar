@@ -1,6 +1,6 @@
 CC = gcc
 SRC = src/
-CFLAGS  = -x c -O3 -ffast-math -fopenmp -g -fno-omit-frame-pointer
+CFLAGS  = -x c -O3 -ffast-math -fopenmp
 
 .DEFAULT_GOAL = md
 .PHONY: clean cleanBenchmarks run runTest runRecord
@@ -23,6 +23,7 @@ clean:
 cleanBenchmarks: clean
 	rm -rf benchmark_* \
 		   single_* \
+		   report_* \
 	       out.* \
 	       err.*
 
