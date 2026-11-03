@@ -1,5 +1,6 @@
 benchmark_*
 single_*
+report_*
 out.*
 err.*
 *_average.txt
