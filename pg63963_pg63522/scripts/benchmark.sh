@@ -23,9 +23,15 @@ MAX_THREADS=192
 
 INPUT="inputdata.txt"
 EXECUTABLE="md"
-REFERENCE="reference.csv"
-REFERENCE_FULL="reference_full.txt"
+REFERENCE="compare/reference.csv"
+REFERENCE_FULL="compare/reference_full.txt"
+
+# Validação do output por passo (reference_full.txt):
+#  1) T e P: diferença <= tolerância do reference.csv -> passa
+#  2) diferença <= PRINT_ULP_TOL (resolução de %20.8f) -> passa
+#  3) senão, compara DIGIT_PRECISION algarismos significativos
 DIGIT_PRECISION=12
+PRINT_ULP_TOL=2e-8
 
 # Grupo 1: FLOPs e tempo (para o eixo Y do roofline)
 EVENTS_FLOPS="task-clock,cycles,instructions,fp_dp_fixed_ops_spec,fp_fma_spec"
@@ -33,6 +39,10 @@ EVENTS_FLOPS="task-clock,cycles,instructions,fp_dp_fixed_ops_spec,fp_fma_spec"
 EVENTS_MEM="br_pred,br_mis_pred,L1-dcache-loads,L1-dcache-load-misses,l2d_cache_refill"
 # Todos juntos (usado só na corrida única do baseline)
 EVENTS_ALL="$EVENTS_FLOPS,$EVENTS_MEM"
+
+# Tempo de parede medido pelo próprio perf (ns): só o md,
+# sem o arranque do srun nem do perf.
+EVENT_TIME="duration_time"
 
 BASE_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 cd "$BASE_DIR" || exit 1
@@ -63,7 +73,15 @@ fi
 command -v perf    >/dev/null || { echo "Erro: perf não disponível."; exit 1; }
 command -v python3 >/dev/null || { echo "Erro: python3 não disponível."; exit 1; }
 
+# O perf tem de suportar duration_time, senão não há tempos
+perf stat -x, -o "$OUTDIR/perf/probe.csv" -e "$EVENT_TIME" -- true >/dev/null 2>&1 \
+    && grep -q "$EVENT_TIME" "$OUTDIR/perf/probe.csv" \
+    || { echo "Erro: este perf não suporta o evento $EVENT_TIME."; exit 1; }
+
+ml GCC
+
 if [[ -f Makefile ]]; then
+    make clean || { echo "Erro no make clean."; exit 1; }
     make md || { echo "Erro de compilação."; exit 1; }
 fi
 [[ -x "./$EXECUTABLE" ]] || { echo "Erro: ./$EXECUTABLE não é executável."; exit 1; }
@@ -88,23 +106,19 @@ echo "threads,kind,metric,value,samples,stdev" > "$RESULTS"
 echo "Benchmark iniciado." > "$STATUS"
 
 # ============================================================
-# Executa uma corrida do md com um grupo de eventos perf
-# (guarda o tempo de parede em LAST_ELAPSED)
+# Executa uma corrida do md com um grupo de eventos perf.
+# O tempo de parede vem do perf (duration_time), junto com os contadores.
 # ============================================================
-LAST_ELAPSED=0
-
 run_perf_group() {
     local group=$1 events=$2 run_dir=$3
     local perf_file="$OUTDIR/perf/perf_${group}_t${NTHREADS}_r${REP}.csv"
-    local t0 t1 rc
 
     mkdir -p "$run_dir"
-    t0=$(date +%s.%N)
     (
         cd "$run_dir" &&
         srun --cpu-bind=cores \
             perf stat -x, -o "$perf_file" \
-            -e "$events" \
+            -e "$events,$EVENT_TIME" \
             -- env \
                 OMP_NUM_THREADS="$NTHREADS" \
                 OMP_DYNAMIC=FALSE \
@@ -115,31 +129,30 @@ run_perf_group() {
                 > "$run_dir/stdout.txt" \
                 2> "$run_dir/stderr.txt"
     )
-    rc=$?
-    t1=$(date +%s.%N)
-    LAST_ELAPSED=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.6f", b-a}')
-    return $rc
 }
 
-# Regista os contadores de um ficheiro perf no CSV bruto
+# Regista os contadores (e o tempo) de um ficheiro perf no CSV bruto.
+# Se faltar o duration_time, aborta o benchmark.
 parse_perf_csv() {
-    local perf_file=$1 expected=$2
-    python3 - "$perf_file" "$NTHREADS" "$REP" "$RAW_RESULTS" "$expected" <<'PY'
+    local perf_file=$1 expected=$2 rc
+    python3 - "$perf_file" "$NTHREADS" "$REP" "$RAW_RESULTS" "$expected,$EVENT_TIME" <<'PY'
 import csv, math, sys
 
 perf_file, threads, repeat, raw_file, expected = sys.argv[1:6]
 expected = set(expected.split(","))
-# aceitar tanto o nome canónico como o alias de perf
-if "seconds elapsed" in expected:
-    expected.add("seconds time elapsed")
+
+# duration_time vem em ns; converte para segundos
+TO_SECONDS = {"": 1e-9, "ns": 1e-9, "us": 1e-6, "usec": 1e-6,
+              "ms": 1e-3, "msec": 1e-3, "s": 1.0, "sec": 1.0}
 
 with open(perf_file, newline="", errors="replace") as f:
     rows = list(csv.reader(f))
 
+found_time = False
 with open(raw_file, "a", newline="") as f:
     writer = csv.writer(f)
     for row in rows:
-        if len(row) < 2:
+        if len(row) < 3:
             continue
         try:
             value = float(row[0].strip().replace(" ", "").replace("\u202f", ""))
@@ -148,18 +161,24 @@ with open(raw_file, "a", newline="") as f:
         if not math.isfinite(value):
             continue
 
-        # Determina o nome do evento
-        if "seconds time elapsed" in ",".join(row):
-            event = "seconds elapsed"
-        elif len(row) >= 3:
-            event = row[2].strip()
-        else:
-            event = row[1].strip()
-
+        event = row[2].strip()
         if event not in expected:
             continue
+
+        if event == "duration_time":
+            value *= TO_SECONDS.get(row[1].strip(), 1e-9)
+            event = "seconds elapsed"
+            found_time = True
         writer.writerow([threads, repeat, "perf", event, value])
+
+sys.exit(0 if found_time else 1)
 PY
+    rc=$?
+    if (( rc != 0 )); then
+        echo "ERRO: $EVENT_TIME em falta em $perf_file: t=$NTHREADS r=$REP"
+        echo "Tempo perf em falta: t=$NTHREADS r=$REP" > "$STATUS"
+        exit 1
+    fi
 }
 
 # Valida cp_average.txt contra o reference.csv (NÃO guarda no CSV)
@@ -221,62 +240,112 @@ print(f"Validação OK: threads={threads}, repetição={repeat}")
 PY
 }
 
-# Valida cp_output.txt contra reference_full.txt, dígito a dígito
+# Valida cp_output.txt contra reference_full.txt:
+# 1) T e P: dentro da tolerância do reference.csv -> passa
+# 2) T, P, KE, PE, Total: diferença <= PRINT_ULP_TOL (resolução do %20.8f) -> passa
+# 3) senão (e para time): compara DIGIT_PRECISION algarismos significativos
 validate_full_run() {
     local output_file=$1
-    python3 - "$output_file" "$REFERENCE_FULL" "$DIGIT_PRECISION" "$NTHREADS" "$REP" <<'PY'
-import sys
 
-output_file, reference_file, digit_precision, threads, repeat = sys.argv[1:6]
-digit_precision = int(digit_precision)
+    python3 - "$output_file" "$REFERENCE_FULL" "$REFERENCE_ABS" "$DIGIT_PRECISION" "$PRINT_ULP_TOL" "$NTHREADS" "$REP" <<'PY'
+import csv, sys
+from decimal import Decimal, InvalidOperation
 
-def digits_of(token):
-    # mantém apenas [0-9], ignora +, -, . e e/E
-    return "".join(ch for ch in token if ch.isdigit())
+(output_file, reference_file, tol_file,
+ precision, ulp_tol, threads, repeat) = sys.argv[1:8]
+precision = int(precision)
+ulp_tol = Decimal(ulp_tol)
 
-def tokens(line):
-    return line.split()
+tols = {}
+with open(tol_file, newline="") as f:
+    for row in csv.DictReader(f):
+        tols[row["field"].strip()] = Decimal(row["tolerance"])
+
+COLS = ["time", "T (K)", "P (Pa)", "KE", "PE", "E_total"]
+# tolerância do CSV (None = não existe)
+COL_TOL = [None, tols["T (K)"], tols["P (Pa)"], None, None, None]
+# tolerância de resolução de impressão (time usa %8.4e, fica só por dígitos)
+COL_ULP = [None, ulp_tol, ulp_tol, ulp_tol, ulp_tol, ulp_tol]
+
 
 def data_rows(path):
     rows = []
     with open(path, errors="replace") as f:
         for line in f:
-            t = tokens(line)
-            if len(t) != 6:
-                continue  # ignora cabeçalho e linhas inválidas
-            try:
-                [float(x) for x in t]
-            except ValueError:
+            tokens = line.split()
+            if len(tokens) != 6:
                 continue
-            rows.append(t)
+            try:
+                values = [Decimal(x) for x in tokens]
+            except InvalidOperation:
+                continue
+            if not all(v.is_finite() for v in values):
+                continue
+            rows.append(values)
     return rows
+
+
+def significant_digits(value, n):
+    if value.is_zero():
+        return ("0", 0)
+    _, digits, _ = value.copy_abs().as_tuple()
+    digits = "".join(map(str, digits)).rstrip("0")
+    return digits[:n], value.copy_abs().adjusted()
+
 
 ref_rows = data_rows(reference_file)
 out_rows = data_rows(output_file)
 
-if len(ref_rows) != len(out_rows):
+if not ref_rows or len(ref_rows) != len(out_rows):
     print(f"FALHA: threads={threads}, repetição={repeat}: "
-          f"nº de linhas difere (obtido={len(out_rows)}, esperado={len(ref_rows)})",
+          f"nº de linhas inválido "
+          f"(obtido={len(out_rows)}, esperado={len(ref_rows)})",
           file=sys.stderr)
     sys.exit(1)
 
+via_tol = via_ulp = via_digits = 0
+worst_ulp = [Decimal(0)] * 6   # maior diferença por coluna
+
 for i, (ref_t, out_t) in enumerate(zip(ref_rows, out_rows)):
     for col, (rv, ov) in enumerate(zip(ref_t, out_t)):
-        rd = digits_of(rv)
-        od = digits_of(ov)
-        # se algum dos lados tiver menos dígitos que a precisão,
-        # compara na totalidade
-        n = digit_precision
-        if len(rd) < n or len(od) < n:
-            n = min(len(rd), len(od))
-        if rd[:n] != od[:n]:
-            print(f"FALHA: threads={threads}, repetição={repeat}: "
-                  f"linha {i+1}, coluna {col+1}: "
-                  f"obtido={ov} (dígitos {od[:n]}), "
-                  f"esperado={rv} (dígitos {rd[:n]})", file=sys.stderr)
-            sys.exit(1)
+        diff = abs(ov - rv)
+        worst_ulp[col] = max(worst_ulp[col], diff)
 
-print(f"Validação completa OK: threads={threads}, repetição={repeat}")
+        # 1) tolerância do reference.csv
+        tol = COL_TOL[col]
+        if tol is not None and diff <= tol:
+            via_tol += 1
+            continue
+
+        # 2) resolução de impressão
+        ulp = COL_ULP[col]
+        if ulp is not None and diff <= ulp:
+            via_ulp += 1
+            continue
+
+        # 3) dígitos significativos
+        ref_digits, ref_exp = significant_digits(rv, precision)
+        out_digits, out_exp = significant_digits(ov, precision)
+        if ref_digits == out_digits and ref_exp == out_exp:
+            via_digits += 1
+            continue
+
+        print(
+            f"FALHA: threads={threads}, repetição={repeat}: "
+            f"linha {i+1}, coluna {col+1} ({COLS[col]})\n"
+            f"  Obtido:    {ov}\n"
+            f"  Esperado:  {rv}\n"
+            f"  Diferença: {diff:.6e}\n"
+            f"  Dígitos obtidos:   {out_digits} (expoente {out_exp})\n"
+            f"  Dígitos esperados: {ref_digits} (expoente {ref_exp})",
+            file=sys.stderr
+        )
+        sys.exit(1)
+
+worst = ", ".join(f"{c}={float(w):.1e}" for c, w in zip(COLS, worst_ulp))
+print(f"Validação completa OK: threads={threads}, repetição={repeat} "
+      f"(tol={via_tol}, ulp={via_ulp}, dígitos={via_digits}) "
+      f"[maior diferença: {worst}]")
 PY
 }
 
@@ -365,8 +434,7 @@ for NTHREADS in "${THREADS[@]}"; do
                 exit 1
             fi
             parse_perf_csv "$OUTDIR/perf/perf_all_t${NTHREADS}_r${REP}.csv" \
-                "$EVENTS_ALL,seconds elapsed"
-            echo "$NTHREADS,$REP,perf,seconds elapsed,$LAST_ELAPSED" >> "$RAW_RESULTS"
+                "$EVENTS_ALL"
             AVERAGE="$RUN/cp_average.txt"
         else
             # ---- Corrida 1: FLOPs + tempo ----
@@ -377,10 +445,9 @@ for NTHREADS in "${THREADS[@]}"; do
                 exit 1
             fi
             parse_perf_csv "$OUTDIR/perf/perf_flops_t${NTHREADS}_r${REP}.csv" \
-                "$EVENTS_FLOPS,seconds elapsed"
-            echo "$NTHREADS,$REP,perf,seconds elapsed,$LAST_ELAPSED" >> "$RAW_RESULTS"
+                "$EVENTS_FLOPS"
 
-            # ---- Corrida 2: memória + branches (valida os resultados) ----
+            # ---- Corrida 2: memória + branches + tempo (valida os resultados) ----
             RUN2="$OUTDIR/outputs/threads_${NTHREADS}/rep_${REP}/mem"
             if ! run_perf_group mem "$EVENTS_MEM" "$RUN2"; then
                 echo "ERRO: execução (mem) falhou: t=$NTHREADS r=$REP"
@@ -389,7 +456,6 @@ for NTHREADS in "${THREADS[@]}"; do
             fi
             parse_perf_csv "$OUTDIR/perf/perf_mem_t${NTHREADS}_r${REP}.csv" \
                 "$EVENTS_MEM"
-            echo "$NTHREADS,$REP,perf,seconds elapsed,$LAST_ELAPSED" >> "$RAW_RESULTS"
             AVERAGE="$RUN2/cp_average.txt"
         fi
 
