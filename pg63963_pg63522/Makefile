@@ -1,6 +1,6 @@
 CC = gcc
 SRC = src/
-CFLAGS  = -x c -O3 -ffast-math -fopenmp
+CFLAGS  = -x c -O3 -ffast-math -fopenmp -g -fno-omit-frame-pointer
 
 .DEFAULT_GOAL = md
 .PHONY: clean cleanBenchmarks run runTest runRecord
@@ -22,6 +22,7 @@ clean:
 
 cleanBenchmarks: clean
 	rm -rf benchmark_* \
+		   single_* \
 	       out.* \
 	       err.*
 
@@ -44,7 +45,7 @@ runTest:
 		-e fp_hp_fixed_ops_spec \
 		-e fp_scale_ops_spec \
 		-e fp_fma_spec \
-		./scripts/run_md.sh
+		./md < inputdata.txt
 
 runRecord:
-	taskset -c 0 perf record -F 1000 -g ./md < inputdata.txt
+	perf record -F 1000 -g ./md < inputdata.txt

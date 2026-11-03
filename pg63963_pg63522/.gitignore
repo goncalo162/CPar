@@ -1,5 +1,6 @@
 benchmark_*
-old.*
+single_*
+out.*
 err.*
 *_average.txt
 *_output.txt
@@ -8,3 +9,4 @@ perf.data
 perf.data.old
 plots/
 md
+.env
