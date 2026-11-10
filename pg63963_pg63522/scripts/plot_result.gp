@@ -2,19 +2,27 @@
 #   gnuplot -e "csvfile='benchmark_x/results.csv'; outdir='plots'" scripts/plot_result.gp
 #
 # Gera:
-#   plots/*.png            + plots/charts.pdf          (run atual)
+#   plots/*.png            + plots/charts.pdf          (run atual; inclui roofline.png)
 #   plots/cmp_*.png        + plots/charts_compare.pdf  (run atual vs compare/best_results.csv)
+#
+# FLOPs: usa a precisão (f64, f32 ou f16) com maior valor no CSV; a grandeza aparece
+# no título/legenda. Se as duas runs da comparação usarem grandezas diferentes, os
+# gráficos de FLOPs aparecem lado a lado (em vez de sobrepostos) na mesma página.
+#
+# Roofline: teto de memória = bw_peak (GB/s); teto de cálculo = pico da precisão a
+# 2.2 GHz escalado pela frequência (freq_GHz) da melhor run (menor tempo).
 #
 # Se algum "seconds elapsed" da run atual (qualquer nº de threads) for inferior a
 # todos os de compare/best_results.csv, pergunta o nome da run antiga, guarda
 # o best_results.csv antigo em compare/best_history/<nome>.csv e passa a run
 # atual a compare/best_results.csv.
 #
-# Opcional: -e "compare_dir='compare'; bestfile='compare/best_results.csv'"
+# Opcional: -e "compare_dir='compare'; bestfile='compare/best_results.csv'; bw_peak=1024"
 # Requer gnuplot >= 5.2, bash e awk/sort.
 
 if (!exists("csvfile")) csvfile = "results.csv"
 if (!exists("outdir"))  outdir  = "plots"
+if (!exists("bw_peak")) bw_peak = 1024.0      # GB/s (HBM2 do A64FX)
 system("mkdir -p " . outdir)
 
 if (system("test -f '" . csvfile . "' && echo 1 || echo 0") eq "0") {
@@ -32,6 +40,12 @@ set tmargin 3
 set bmargin 6
 set xlabel "Número de threads"
 set key outside bottom center horizontal
+
+# cores: atual (azul/verde) vs melhor anterior (laranja/rosa)
+c_cur1 = "#0072B2"
+c_bst1 = "#D55E00"
+c_cur2 = "#009E73"
+c_bst2 = "#CC79A7"
 
 # ------------------------------------------------------------
 # Eixo X dinâmico: threads presentes no CSV
@@ -58,12 +72,31 @@ aminf(f,k,m) = real(system(sprintf("awk -F, -v k='%s' -v m='%s' 'NR>1 && $2==k &
 amaxf(f,k,m) = real(system(sprintf("awk -F, -v k='%s' -v m='%s' 'NR>1 && $2==k && $3==m {v=$4+0; if(n++==0||v>mx)mx=v} END{printf \"%%.12g\", mx}' %s", k, m, f)))
 # nº de threads onde a métrica é mínima
 argminf(f,k,m) = real(system(sprintf("awk -F, -v k='%s' -v m='%s' 'NR>1 && $2==k && $3==m {v=$4+0; if(n++==0||v<mn){mn=v; t=$1}} END{printf \"%%s\", t}' %s", k, m, f)))
+# valor da métrica para um dado nº de threads
+valatf(f,k,m,t) = real(system(sprintf("awk -F, -v k='%s' -v m='%s' -v t=%d 'NR>1 && $2==k && $3==m && $1+0==t {printf \"%%.12g\", $4+0}' %s", k, m, int(t), f)))
+
+mn2(a,b) = (a < b) ? a : b
+mx2(a,b) = (a > b) ? a : b
 
 filt(k,m) = filtf(csvfile,k,m)
 src(k,m)  = srcf(csvfile,k,m)
 cnt(k,m)  = cntf(csvfile,k,m)
 amin(k,m) = aminf(csvfile,k,m)
 amax(k,m) = amaxf(csvfile,k,m)
+
+# ------------------------------------------------------------
+# Grandeza de FLOPs: a precisão (f64/f32/f16) com maior valor no CSV.
+# CSVs antigos só têm "FLOPs" (dp + 2*fma) -> tratado como "legacy".
+# ------------------------------------------------------------
+ft_awk = 'NR>1 && $2=="derived" && $3 ~ /^FLOPs_f(64|32|16)$/ {v=$4+0; if(v>mx[$3]) mx[$3]=v} END{bm=-1; for(k in mx) if(mx[k]>bm){bm=mx[k]; b=k}; sub(/FLOPs_/,"",b); print b}'
+ftypef(f)  = system("awk -F, '" . ft_awk . "' " . f)
+fl_type(f) = (ftypef(f) eq "") ? "legacy" : ftypef(f)
+fmet(t)    = (t eq "legacy") ? "FLOPs" : "FLOPs_" . t
+flab(t)    = (t eq "legacy") ? "FLOPs (legado: dp+2*fma)" : "FLOPs (" . t . ")"
+# pico a 2.2 GHz em GFLOP/s (48 cores): f64 3.3792, f32 6.7584, f16 13.5168 TFLOP/s
+peak22(t)  = (t eq "f64") ? 3379.2 : ((t eq "f32") ? 6758.4 : 13516.8)
+
+ftype = fl_type(csvfile)
 
 # ------------------------------------------------------------
 # Speedup: T(menor nº de threads) / T(n), calculado a partir do tempo
@@ -79,9 +112,54 @@ id_awk  = 'NR>1 && $2=="perf" && $3=="seconds elapsed" {t[$1]=1; if(mn==""||$1+0
 ideal_src = "< awk -F, '" . id_awk . "' " . csvfile . " | sort -t, -k1,1n"
 
 # ------------------------------------------------------------
+# Roofline: pré-cálculos (pontos: threads, intensidade aritmética, GFLOP/s)
+# AI = FLOPs / bytes de memória ; GFLOP/s = FLOPs / tempo / 1e9
+# ------------------------------------------------------------
+roof_awk = 'NR>1 && $2=="derived" && $3==F {f[$1]=$4+0} NR>1 && $2=="derived" && $3=="mem_bytes" {b[$1]=$4+0} NR>1 && $2=="perf" && $3=="seconds elapsed" {t[$1]=$4+0} END{for(n in t) if(f[n]>0 && b[n]>0 && t[n]>0) printf "%s,%.9g,%.9g\n", n, f[n]/b[n], f[n]/t[n]/1e9}'
+colmin(cmd,c) = real(system(cmd . sprintf(" | awk -F, '{v=$%d+0; if(NR==1||v<m)m=v} END{printf \"%%.12g\", m}'", c)))
+colmax(cmd,c) = real(system(cmd . sprintf(" | awk -F, '{v=$%d+0; if(NR==1||v>m)m=v} END{printf \"%%.12g\", m}'", c)))
+
+has_roof = 0
+if (ftype ne "legacy" && has_elapsed > 0 && cnt("derived", "mem_bytes") > 0 && cnt("derived", fmet(ftype)) > 0) {
+    roof_cmd = "awk -F, -v F='" . fmet(ftype) . "' '" . roof_awk . "' " . csvfile . " | sort -t, -k1,1n"
+    roof_src = "< " . roof_cmd
+    if (real(system(roof_cmd . " | wc -l")) > 0) {
+        has_roof = 1
+        rbest_th = argminf(csvfile, "perf", "seconds elapsed")
+        if (cnt("derived", "freq_GHz") > 0) {
+            freq_best = valatf(csvfile, "derived", "freq_GHz", rbest_th)
+        } else {
+            print "AVISO: sem freq_GHz no CSV - a usar 2.2 GHz no teto de cálculo"
+            freq_best = 2.2
+        }
+        peak  = peak22(ftype) * freq_best / 2.2       # GFLOP/s
+        ridge = peak / bw_peak                        # FLOP/byte
+        roofline(x) = (bw_peak*x < peak) ? bw_peak*x : peak
+        xmin_r = mn2(colmin(roof_cmd, 2), ridge) / 30.0
+        xmax_r = mx2(colmax(roof_cmd, 2), ridge) * 3.0
+        ymin_r = colmin(roof_cmd, 3) / 3.0
+        ymax_r = peak * 2.0
+
+        # rótulo da reta de largura de banda: posição e ângulo aproximado no ecrã
+        xdec = log10(xmax_r/xmin_r)
+        ydec = log10(ymax_r/ymin_r)
+        bw_ang  = atan2(597.0/ydec, 1068.0/xdec) * 180.0/pi
+        bw_xlab = mx2(xmin_r * (xmax_r/xmin_r)**0.10, 2.5*ymin_r/bw_peak)
+        bw_xlab = mn2(bw_xlab, ridge/2.0)
+
+        # verificação de coerência: pontos acima do roofline => medição inconsistente
+        n_above = real(system(roof_cmd . sprintf(" | awk -F, -v bw=%.12g -v pk=%.12g '{r=bw*$2; if(r>pk)r=pk; if($3>r*1.001)n++} END{printf \"%%d\", n+0}'", bw_peak, peak)))
+        if (n_above > 0) {
+            print sprintf("AVISO: %d ponto(s) acima do roofline - impossível fisicamente: verifica mem_bytes (bus_*), FLOPs ou a frequência", n_above)
+        }
+    }
+}
+if (!has_roof) print "AVISO: sem dados para o roofline (faltam FLOPs_*, mem_bytes ou tempo) - gráfico ignorado"
+
+# ------------------------------------------------------------
 # Definição dos gráficos (metric2 vazio => série única)
 # ------------------------------------------------------------
-NCH = 6
+NCH = 8
 array ch_title[NCH]
 array ch_ylabel[NCH]
 array ch_file[NCH]
@@ -89,6 +167,7 @@ array ch_kind1[NCH]
 array ch_metric1[NCH]
 array ch_kind2[NCH]
 array ch_metric2[NCH]
+array ch_legend[NCH]
 
 ch_title[1]="Instruções";              ch_ylabel[1]="Instruções"
 ch_file[1]="instructions";             ch_kind1[1]="perf"; ch_metric1[1]="instructions"
@@ -106,13 +185,25 @@ ch_title[4]="Branches: pred vs miss";  ch_ylabel[4]="Branches"
 ch_file[4]="branch_pred_vs_miss";      ch_kind1[4]="perf"; ch_metric1[4]="br_pred"
 ch_kind2[4]="perf"; ch_metric2[4]="br_mis_pred"
 
-ch_title[5]="FLOPs";                   ch_ylabel[5]="FLOPs"
-ch_file[5]="flops";                    ch_kind1[5]="derived"; ch_metric1[5]="FLOPs"
+# FLOPs: precisão com maior valor (a grandeza vai no título, no eixo e na legenda)
+ch_title[5]=flab(ftype);               ch_ylabel[5]=flab(ftype)
+ch_file[5]="flops";                    ch_kind1[5]="derived"; ch_metric1[5]=fmet(ftype)
 ch_kind2[5]=""; ch_metric2[5]=""
 
 ch_title[6]="Tempo de execução";       ch_ylabel[6]="Segundos"
 ch_file[6]="elapsed";                  ch_kind1[6]="perf"; ch_metric1[6]="seconds elapsed"
 ch_kind2[6]=""; ch_metric2[6]=""
+
+ch_title[7]="Largura de banda de memória"; ch_ylabel[7]="GB/s"
+ch_file[7]="mem_bandwidth";            ch_kind1[7]="derived"; ch_metric1[7]="mem_bw_GBs"
+ch_kind2[7]=""; ch_metric2[7]=""
+
+ch_title[8]="Frequência média";        ch_ylabel[8]="GHz"
+ch_file[8]="frequency";                ch_kind1[8]="derived"; ch_metric1[8]="freq_GHz"
+ch_kind2[8]=""; ch_metric2[8]=""
+
+do for [i=1:NCH] { ch_legend[i] = ch_metric1[i] }
+ch_legend[5] = flab(ftype)
 
 # ------------------------------------------------------------
 # Passada 1: PNGs | Passada 2: PDF multi-página
@@ -173,16 +264,16 @@ do for [pass=1:2] {
         set ylabel ch_ylabel[i]
 
         if (has2 > 0) {
-            plot f1 using 1:2 with linespoints lw 2 pt 7 title ch_metric1[i], \
+            plot f1 using 1:2 with linespoints lw 2 pt 7 title ch_legend[i], \
                  f1 using 1:2:1 with labels offset 0,1 font ",10" notitle, \
                  f2 using 1:2 with linespoints lw 2 pt 5 title ch_metric2[i], \
                  f2 using 1:2:1 with labels offset 0,-1 font ",10" notitle
         } else if (ch_file[i] eq "elapsed") {
             # valor y (segundos) assinalado em cada ponto
-            plot f1 using 1:2 with linespoints lw 2 pt 7 title ch_metric1[i], \
+            plot f1 using 1:2 with linespoints lw 2 pt 7 title ch_legend[i], \
                  f1 using 1:2:(sprintf("%.4g s", $2)) with labels offset 0,1 font ",10" notitle
         } else {
-            plot f1 using 1:2 with linespoints lw 2 pt 7 title ch_metric1[i], \
+            plot f1 using 1:2 with linespoints lw 2 pt 7 title ch_legend[i], \
                  f1 using 1:2:1 with labels offset 0,1 font ",10" notitle
         }
     }
@@ -205,6 +296,52 @@ do for [pass=1:2] {
             spd_src using 1:2 with linespoints lw 2 pt 7 title "Medido", \
             spd_src using 1:2:(sprintf("%.0f%%", $2/$1*100)) \
                 with labels offset 1.3,0.9 font ",10" tc rgb "#222222" notitle
+    }
+
+    # --------------------------------------------------------
+    # Roofline (log-log): x = intensidade aritmética, y = GFLOP/s
+    # Um ponto por nº de threads (nº por baixo); melhor tempo com outra cor;
+    # ridge point a tracejado com a intensidade aritmética em baixo.
+    # --------------------------------------------------------
+    if (has_roof) {
+        if (pass == 1) { set output outdir . "/roofline.png" }
+        set xtics auto
+        set logscale x 10
+        set logscale y 10
+        set xrange [xmin_r : xmax_r]
+        set yrange [ymin_r : ymax_r]
+        set format x "10^{%L}"
+        set format y "10^{%L}"
+        set samples 1000
+        set title sprintf("Roofline (%s)", ftype)
+        set xlabel "Intensidade aritmética (FLOP/byte)"
+        set ylabel sprintf("Desempenho (GFLOP/s, %s)", ftype)
+
+        set arrow 1 from ridge, ymin_r to ridge, peak nohead dt 2 lw 2 lc rgb "gray40"
+        set label 1 sprintf("ridge: %.2f FLOP/byte", ridge) at ridge, ymin_r left offset 0.6,1.2 front textcolor rgb "gray30"
+        set label 2 sprintf("memória: %g GB/s", bw_peak) at bw_xlab, bw_peak*bw_xlab rotate by bw_ang center offset 0,1.0 front textcolor rgb "black"
+        set label 3 sprintf("pico de cálculo (%s): %.2f TFLOP/s a %.1f GHz", ftype, peak/1000.0, freq_best) at xmax_r/1.1, peak right offset 0,1.0 front textcolor rgb "black"
+
+        plot roofline(x) with lines lw 3 lc rgb "black" \
+                 title sprintf("Roofline %s: %.2f TFLOP/s a %.1f GHz | %g GB/s", ftype, peak/1000.0, freq_best, bw_peak), \
+             roof_src using 2:3 with points pt 7 ps 1.6 lc rgb c_cur1 title sprintf("Threads (%s)", ftype), \
+             roof_src using 2:($1==rbest_th ? $3 : 1/0) with points pt 13 ps 2.4 lc rgb c_bst1 \
+                 title sprintf("Melhor tempo (%d threads)", rbest_th), \
+             roof_src using 2:($1!=rbest_th ? $3 : 1/0):1 with labels offset 0,-1.3 font ",10" tc rgb c_cur1 notitle, \
+             roof_src using 2:($1==rbest_th ? $3 : 1/0):1 with labels offset 0,-1.5 font ",11" tc rgb c_bst1 notitle
+
+        unset arrow 1
+        unset label 1
+        unset label 2
+        unset label 3
+
+        # restaurar eixos dos gráficos por nº de threads
+        unset logscale y
+        set logscale x 2
+        set xrange [tmin/1.25 : tmax*1.25]
+        set format x "%g"
+        eval "set xtics (" . threads . ")"
+        set xlabel "Número de threads"
     }
     unset output
 }
@@ -243,11 +380,15 @@ if (!have_best) {
         set format x "%g"
         eval "set xtics (" . threads_c . ")"
 
-        # cores: atual (azul/verde) vs melhor anterior (laranja/rosa)
-        c_cur1 = "#0072B2"
-        c_bst1 = "#D55E00"
-        c_cur2 = "#009E73"
-        c_bst2 = "#CC79A7"
+        # grandeza de FLOPs de cada run
+        ft_c = ftype
+        ft_b = fl_type(bestfile)
+        fm_c = fmet(ft_c)
+        fm_b = fmet(ft_b)
+        flops_differ = (ft_c ne ft_b)
+        if (flops_differ) {
+            print "AVISO: grandezas de FLOPs diferentes (atual: " . ft_c . ", melhor: " . ft_b . ") - gráficos lado a lado"
+        }
 
         do for [pass=1:2] {
             if (pass == 1) {
@@ -258,6 +399,49 @@ if (!have_best) {
             }
 
             do for [i=1:NCH] {
+                # ---- FLOPs com grandezas diferentes: dois gráficos lado a lado ----
+                if (ch_file[i] eq "flops" && flops_differ) {
+                    if (cntf(csvfile, "derived", fm_c) == 0 || cntf(bestfile, "derived", fm_b) == 0) {
+                        print "AVISO: sem dados de FLOPs nas duas runs - gráfico ignorado"
+                        continue
+                    }
+                    if (pass == 1) { set output outdir . "/cmp_flops.png" }
+                    unset lmargin
+                    unset rmargin
+                    set multiplot layout 1,2 title "FLOPs: atual vs melhor anterior (grandezas diferentes)"
+                    do for [side=1:2] {
+                        ff = (side == 1) ? csvfile : bestfile
+                        mm = (side == 1) ? fm_c : fm_b
+                        ll = (side == 1) ? flab(ft_c) : flab(ft_b)
+                        cc = (side == 1) ? c_cur1 : c_bst1
+                        pp = (side == 1) ? 7 : 5
+                        nm = (side == 1) ? "Atual" : "Melhor anterior"
+                        fsrc = srcf(ff, "derived", mm)
+
+                        unset logscale y
+                        sy1 = aminf(ff, "derived", mm)
+                        sy2 = amaxf(ff, "derived", mm)
+                        sratio = (sy1 > 0) ? sy2/sy1 : 1e9
+                        if (sratio >= 20) {
+                            set logscale y 10
+                            set yrange [sy1/2 : sy2*3]
+                            set format y "10^{%L}"
+                        } else {
+                            set yrange [0 : (sy2 > 0 ? sy2*1.2 : 1)]
+                            set format y "%.3g"
+                        }
+                        set title nm . ": " . ll
+                        set ylabel ll
+                        plot fsrc using 1:2 with linespoints lw 2 pt (pp) lc rgb cc title nm . " - " . ll, \
+                             fsrc using 1:2:1 with labels offset 0,1 font ",10" tc rgb cc notitle
+                    }
+                    unset multiplot
+                    unset logscale y
+                    set lmargin 14
+                    set rmargin 4
+                    continue
+                }
+
                 k1 = ch_kind1[i]
                 m1 = ch_metric1[i]
                 hc1 = cntf(csvfile,  k1, m1)
@@ -268,6 +452,9 @@ if (!have_best) {
                 }
                 cur1 = srcf(csvfile,  k1, m1)
                 bst1 = srcf(bestfile, k1, m1)
+
+                # grandeza dos FLOPs na legenda (as duas runs têm a mesma aqui)
+                cmp_sfx = (ch_file[i] eq "flops") ? " (" . ft_c . ")" : ""
 
                 has2c = 0
                 has2b = 0
@@ -333,9 +520,9 @@ if (!have_best) {
                          bst1 using 1:2 with linespoints lw 2 pt 5 dt 2 lc rgb c_bst1 title "Melhor anterior", \
                          bst1 using 1:2:(sprintf("%.4g s", $2)) with labels offset 0,-1 font ",10" tc rgb c_bst1 notitle
                 } else {
-                    plot cur1 using 1:2 with linespoints lw 2 pt 7 lc rgb c_cur1 title "Atual", \
+                    plot cur1 using 1:2 with linespoints lw 2 pt 7 lc rgb c_cur1 title "Atual" . cmp_sfx, \
                          cur1 using 1:2:1 with labels offset 0,1 font ",10" tc rgb c_cur1 notitle, \
-                         bst1 using 1:2 with linespoints lw 2 pt 5 dt 2 lc rgb c_bst1 title "Melhor anterior", \
+                         bst1 using 1:2 with linespoints lw 2 pt 5 dt 2 lc rgb c_bst1 title "Melhor anterior" . cmp_sfx, \
                          bst1 using 1:2:1 with labels offset 0,-1 font ",10" tc rgb c_bst1 notitle
                 }
             }
