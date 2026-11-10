@@ -1,7 +1,7 @@
 CC = gcc
 SRC = src/
-CFLAGS  = -x c -O3 -ffast-math -fopenmp
-REPCFLAGS = -x c -O3 -ffast-math -fopenmp -g
+CFLAGS  = -x c -O3 -ffast-math -fopenmp -march=native
+REPCFLAGS = -x c -O3 -ffast-math -fopenmp -g -march=native
 LDFLAGS = -Wl,--build-id=sha1
 
 BUS_PUS ?= 0,12,24,36
