@@ -9,8 +9,9 @@
 #include <stdbool.h>
 #include <omp.h>
 
-#define MAXPART 5001
+#include "md.h"
 
+/* definição das variáveis globais (declaradas como extern em md.h) */
 int N;
 double sigma = 1.0, epsilon = 1.0, m = 1.0, kB = 1.0;
 double NA = 6.022140857e23;
@@ -25,10 +26,8 @@ char atype[10];
 
 void initialize(void);
 double VelocityVerlet(double dt, int iter, FILE *fp);
-void computeAccelerations(void);
 double gaussdist(void);
 void initializeVelocities(void);
-double Potential(void);
 double MeanSquaredVelocity(void);
 double Kinetic(void);
 
@@ -278,108 +277,6 @@ double Kinetic(void)
         kin += 0.5 * m * (vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]);
     }
     return kin;
-}
-
-/*
-static inline double potRow(int i, double sig2, double factor)
-{
-    const double xi = rx[i], yi = ry[i], zi = rz[i];
-    double sum_i = 0.0;
-
-#pragma omp simd reduction(+ : sum_i)
-    for (int j = i + 1; j < N; j++)
-    {
-        const double dx = xi - rx[j];
-        const double dy = yi - ry[j];
-        const double dz = zi - rz[j];
-        const double r2 = dx * dx + dy * dy + dz * dz;
-        const double q2 = sig2 / r2;
-        const double q6 = q2 * q2 * q2;
-        sum_i += factor * (q6 * q6 - q6);
-    }
-    return sum_i;
-}
-
-double Potential(void)
-{
-    double Pot = 0.0;
-    const double sig2 = sigma * sigma;
-    const double factor = 4.0 * epsilon;
-    const int R = N - 1;
-#pragma omp parallel for reduction(+ : Pot) schedule(static)
-    for (int k = 0; k < (R + 1) / 2; k++)
-    {
-        Pot += potRow(k, sig2, factor);
-        if (R - 1 - k != k)
-            Pot += potRow(R - 1 - k, sig2, factor);
-    }
-    return 2.0 * Pot;
-}
-*/
-
-double Potential(void)
-{
-    double Pot = 0.0;
-    const double sig2 = sigma * sigma;
-    const double factor = 4.0 * epsilon;
-
-#pragma omp parallel for reduction(+ : Pot) schedule(static, 1)
-    for (int i = 0; i < N - 1; i++)
-    {
-        const double xi = rx[i], yi = ry[i], zi = rz[i];
-        double sum_i = 0.0;
-
-#pragma omp simd reduction(+ : sum_i)
-        for (int j = i + 1; j < N; j++)
-        {
-            const double dx = xi - rx[j];
-            const double dy = yi - ry[j];
-            const double dz = zi - rz[j];
-            const double r2 = dx * dx + dy * dy + dz * dz;
-            const double q2 = sig2 / r2;
-            const double q6 = q2 * q2 * q2;
-            sum_i += factor * (q6 * q6 - q6);
-        }
-        Pot += sum_i;
-    }
-    return 2.0 * Pot; // O original conta cada par duas vezes, multiplicar para comparar
-}
-
-void computeAccelerations(void)
-{
-#pragma omp parallel for schedule(static)
-    for (int i = 0; i < N; i++)
-    {
-        const double xi = rx[i];
-        const double yi = ry[i];
-        const double zi = rz[i];
-        double fx = 0.0, fy = 0.0, fz = 0.0;
-
-#pragma omp simd reduction(+ : fx, fy, fz)
-        for (int j = 0; j < N; j++)
-        {
-            const double dx = xi - rx[j];
-            const double dy = yi - ry[j];
-            const double dz = zi - rz[j];
-
-            const double r2 = dx * dx + dy * dy + dz * dz;
-            /* seleção sem ramo: evita divisão por zero em j == i */
-            const double inv2 = (i == j) ? 0.0 : 1.0 / r2;
-            const double inv4 = inv2 * inv2;
-            const double inv8 = inv4 * inv4;
-            const double inv14 = inv8 * inv4 * inv2;
-
-            const double f = 24.0 * (2.0 * inv14 - inv8);
-
-            fx += dx * f;
-            fy += dy * f;
-            fz += dz * f;
-        }
-
-        ax[i] = fx;
-        ay[i] = fy;
-        az[i] = fz;
-    }
 }
 
 double VelocityVerlet(double dt, int iter, FILE *fp)
