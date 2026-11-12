@@ -330,6 +330,7 @@ double Potential(void)
         double sum_i = 0.0;
 
 #pragma omp simd reduction(+ : sum_i)
+#pragma GCC unroll 4
         for (int j = i + 1; j < N; j++)
         {
             const double dx = xi - rx[j];
@@ -356,6 +357,7 @@ void computeAccelerations(void)
         double fx = 0.0, fy = 0.0, fz = 0.0;
 
 #pragma omp simd reduction(+ : fx, fy, fz)
+#pragma GCC unroll 4
         for (int j = 0; j < N; j++)
         {
             const double dx = xi - rx[j];

@@ -1,7 +1,7 @@
 CC = gcc
 SRC = src/
-CFLAGS  = -x c -O3 -ffast-math -fopenmp
-REPCFLAGS = -x c -O3 -ffast-math -fopenmp -g
+CFLAGS  = -x c -O3 -ffast-math -fopenmp -mcpu=a64fx -msve-vector-bits=512
+REPCFLAGS = -x c -O3 -ffast-math -mcpu=a64fx -fopenmp -msve-vector-bits=512 -g
 LDFLAGS = -Wl,--build-id=sha1
 
 BUS_PUS ?= 0,12,24,36
