@@ -11,7 +11,7 @@
 | VelocityVerlet       | T x (2N + N^2) | 2M + 5MM | Possivel   | 0,01%   | Paralizar dois ciclos + SIMD                |
 | MeanSquaredVelocity  | T x N          | 1M       | Possivel   | .       | Paralizar com Red mas ver se compensa       |
 | Kinetic              | T x N          | 1M       | Possivel   | .       | Paralizar com Red mas ver se compensa       |
-| Potential            | T x (N^2/2)    | 2.5MM    | N Possivel | 32,94%  | Paralizar dois ciclos + SIMD(cuidado carga) |
+| Potential            | T x (N^2/2)    | 2.5MM    | Possivel   | 32,94%  | Paralizar dois ciclos + SIMD(cuidado carga) |
 
 ### computeAccelerations
 
