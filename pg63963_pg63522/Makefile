@@ -31,7 +31,7 @@ clean:
 
 cleanBenchmarks: clean
 	rm -rf benchmark_* \
-	       single_* \
+		   single_* \
 	       report_* \
 	       out.* \
 	       err.*
