@@ -1,0 +1,26 @@
+
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                  WELCOME TO WILLY P CHEM MD!
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+  ENTER A TITLE FOR YOUR CALCULATION!
+
+  WHICH NOBLE GAS WOULD YOU LIKE TO SIMULATE? (DEFAULT IS ARGON)
+  Type He, Ne, Ar, Kr, or Xe:
+
+  YOU ARE SIMULATING Ar GAS!
+
+  ENTER THE INITIAL TEMPERATURE IN KELVIN:
+
+  ENTER THE NUMBER DENSITY IN moles/m^3:
+PERCENTAGE OF CALCULATION COMPLETE:
+[ 10% | 20% | 30% | 40% | 50% | 60% | 70% | 80% | 90% | 100% |
+Simulation complete.
+Trajectory: cp_traj.xyz
+Output: cp_output.txt
+Averages: cp_average.txt
+Average temperature (K): 131.45506
+Average pressure (Pa): 131001228.45076
+PV/nT (J mol^-1 K^-1): 28.47279
+Compressibility: 3.42449
+Percent error in gas constant: 242.44905%
