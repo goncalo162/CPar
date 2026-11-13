@@ -191,8 +191,6 @@ src/MD.cpp:473:23: optimized: loop vectorized using 64 byte vectors
 src/MD.cpp:242:31: optimized: loop vectorized using 8 byte vectors
 (base) miguelsantos@Mac pg63963_pg63522 %
 
-uso de nova flag -msve-vector-bits=512
-
 #### Resultados
 
 Base PB
@@ -216,3 +214,40 @@ Com SIMD aplicado a computeAccelerations e Potential
 | 96      | 66,56                  | 33,12       | 35,1   | 4,35 | 2,25      |
 | 128     | 66,26                  | 33,32       | 35,9   | 4,33 | 2,66      |
 | 144     | 65,74                  | 33,80       | 36,1   | 4,32 | 2,49      |
+
+#### uso de nova flag -msve-vector-bits=512
+
+Explicação:
+
+Uso:
+
+Mudanças:
+
+PB
+
+| Threads | % computeAccelerations | % Potential | #(IMM) | CPI  | Tempo (s) |
+| ------- | ---------------------- | ----------- | ------ | ---- | --------- |
+| 8       | 66,56                  | 33,01       | 34,8   | 4,24 | 9,25      |
+| 16      | 66,16                  | 32,81       | 40,9   | 3,67 | 4,75      |
+| 48      | 61,68                  | 30,77       | 54,6   | 2,91 | 1,69      |
+| 96      | 66,56                  | 33,12       | 35,1   | 4,35 | 2,25      |
+| 128     | 66,26                  | 33,32       | 35,9   | 4,33 | 2,66      |
+| 144     | 65,74                  | 33,80       | 36,1   | 4,32 | 2,49      |
+
+| Threads | % computeAccelerations | % Potential | #(IMM) | CPI  | Tempo (s) |
+| ------- | ---------------------- | ----------- | ------ | ---- | --------- |
+| 8       | 67,02                  | 31,51       | 40,5   | 1,13 | 2,88      |
+| 16      | 65,57                  | 30,87       | 42,1   | 1,10 | 1,47      |
+| 48      | 57,74                  | 27,47       | 48,9   | 1,08 | 0,575     |
+| 96      | 67,29                  | 31,72       | 41,2   | 1,24 | 1,14      |
+| 128     | 68,79                  | 29,83       | 41,9   | 1,27 | 1,40      |
+| 144     | 69,36                  | 29,15       | 42,2   | 1,28 | 1,43      |
+
+| Função                                            | % do tempo |
+| ------------------------------------------------- | ---------- |
+| computeAccelerations                              | 57,7       |
+| Potential                                         | 27,5       |
+| Sincronização OpenMP(barreiras)                   | 10,5       |
+| Sincronização OpenMP(locks/atómicos das reduções) | 2,1        |
+| Kinetic                                           | 1,8        |
+| VelocityVerlet + MeanSquaredVelocity              | 0,3        |
