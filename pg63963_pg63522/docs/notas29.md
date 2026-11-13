@@ -317,3 +317,12 @@ Novos Resultados
 | Potential                      | 5.1496  | 0.1178 | 26.9%   | 43.7x   | 91%   | 0.0105    |
 | Resto (série, I/O)             | 0.0032  | 0.0025 | 0.6%    | 1.3x    | 3%    | 0.0024    |
 | TOTAL (ciclo principal)        | 17.5568 | 0.4380 | 100.0%  | 40.1x   | 84%   | 0.0722    |
+
+| Parte                                              | % do tempo |
+| -------------------------------------------------- | ---------- |
+| computeAccelerations (forças + energia)            | 89,6       |
+| Sincronização OpenMP (barreiras)                   | 7,0        |
+| Sincronização OpenMP (locks/atómicos das reduções) | 3,0        |
+| VelocityVerlet (2 ciclos)                          | 0,2        |
+| Gestão de threads (team_start, thread_start, …)    | 0,1        |
+| Resto (parte em série, I/O)                        | ~0         |

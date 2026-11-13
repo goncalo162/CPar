@@ -19,53 +19,78 @@
    VelocityVerlet) e Potential(). */
 static double PE_atual = 0.0;
 
+/* Tamanho do bloco de j: os temporários (2 x BLK doubles = 8 KB) ficam na L1 (64 KB). */
+#ifndef BLK
+#define BLK 512
+#endif
+
 void computeAccelerations(void)
 {
-    const double sig2 = sigma * sigma;
     double pot = 0.0;
 
-#pragma omp parallel for schedule(static) reduction(+ : pot)
-    for (int i = 0; i < N; i++)
+#pragma omp parallel reduction(+ : pot)
     {
-        const double xi = rx[i];
-        const double yi = ry[i];
-        const double zi = rz[i];
-        double fx = 0.0, fy = 0.0, fz = 0.0, ui = 0.0;
+        double r2v[BLK], inv2v[BLK];
 
-        for (int j = 0; j < N; j++)
+#pragma omp for schedule(static)
+        for (int i = 0; i < N; i++)
         {
-            const double dx = xi - rx[j];
-            const double dy = yi - ry[j];
-            const double dz = zi - rz[j];
+            const double xi = rx[i];
+            const double yi = ry[i];
+            const double zi = rz[i];
+            double fx = 0.0, fy = 0.0, fz = 0.0, ui = 0.0;
 
-            const double r2 = dx * dx + dy * dy + dz * dz;
-            /* 1/r2 aproximado (-mlow-precision-div) + 1 iteração de Newton
-               para recuperar a precisão total do double;
-               seleção sem ramo: evita divisão por zero em j == i */
-            const double inv0 = 1.0 / r2;
-            const double inv2 = (r2 > 0.0) ? inv0 * (2.0 - r2 * inv0) : 0.0;
-            const double inv4 = inv2 * inv2;
-            const double inv8 = inv4 * inv4;
-            const double inv14 = inv8 * inv4 * inv2;
+            /* cadeia longa de dependências partida em 3 ciclos curtos por bloco de j:
+               o CPU consegue ter muitas iterações independentes em execução (esconde a latência) */
+            for (int j0 = 0; j0 < N; j0 += BLK)
+            {
+                const int n = (N - j0 < BLK) ? N - j0 : BLK;
 
-            const double f = 24.0 * (2.0 * inv14 - inv8);
+                /* fase 1: distância ao quadrado */
+                for (int k = 0; k < n; k++)
+                {
+                    const double dx = xi - rx[j0 + k];
+                    const double dy = yi - ry[j0 + k];
+                    const double dz = zi - rz[j0 + k];
+                    r2v[k] = dx * dx + dy * dy + dz * dz;
+                }
 
-            /* energia potencial do par (j == i: inv2 = 0 -> soma 0) */
-            const double q2 = sig2 * inv2;
-            const double q6 = q2 * q2 * q2;
-            ui += q6 * q6 - q6;
+                /* fase 2: 1/r2 aproximado + 1 iteração de Newton; j == i -> 0 */
+                for (int k = 0; k < n; k++)
+                {
+                    const double r2 = r2v[k];
+                    const double inv0 = 1.0 / r2;
+                    inv2v[k] = (r2 > 0.0) ? inv0 * (2.0 - r2 * inv0) : 0.0;
+                }
 
-            fx += dx * f;
-            fy += dy * f;
-            fz += dz * f;
+                /* fase 3: potências em árvore (sigma = epsilon = 1), o 24 fica para o fim */
+                for (int k = 0; k < n; k++)
+                {
+                    const double dx = xi - rx[j0 + k];
+                    const double dy = yi - ry[j0 + k];
+                    const double dz = zi - rz[j0 + k];
+                    const double inv2 = inv2v[k];
+
+                    const double dois_inv2 = inv2 + inv2;
+                    const double inv4 = inv2 * inv2;
+                    const double inv6 = inv4 * inv2;
+                    const double inv8 = inv4 * inv4;
+                    const double s = dois_inv2 * inv4 - 1.0;
+                    const double f = inv8 * s;
+
+                    ui += inv6 * (inv6 - 1.0);
+                    fx += dx * f;
+                    fy += dy * f;
+                    fz += dz * f;
+                }
+            }
+
+            ax[i] = 24.0 * fx;
+            ay[i] = 24.0 * fy;
+            az[i] = 24.0 * fz;
+            pot += ui;
         }
-
-        ax[i] = fx;
-        ay[i] = fy;
-        az[i] = fz;
-        pot += ui;
     }
-    /* soma sobre todos os pares i != j = o "2 * Pot" do Potential original */
     PE_atual = 4.0 * epsilon * pot;
 }
 
