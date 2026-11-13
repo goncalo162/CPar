@@ -30,9 +30,6 @@ void computeAccelerations(void)
             const double dz = zi - rz[j];
 
             const double r2 = dx * dx + dy * dy + dz * dz;
-            /* 1/r2 aproximado (-mlow-precision-div) + 1 iteração de Newton
-               para recuperar a precisão total do double;
-               seleção sem ramo: evita divisão por zero em j == i */
             const double inv0 = 1.0 / r2;
             const double inv2 = (r2 > 0.0) ? inv0 * (2.0 - r2 * inv0) : 0.0;
             const double inv4 = inv2 * inv2;
