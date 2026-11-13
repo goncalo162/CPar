@@ -30,6 +30,7 @@ void computeAccelerations(void)
 
 #pragma omp parallel reduction(+ : pot)
     {
+        /* temporários privados de cada thread (na stack): sem partilha, sem data races */
         double r2v[BLK], inv2v[BLK];
 
 #pragma omp for schedule(static)
