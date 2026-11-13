@@ -36,14 +36,25 @@ echo "nó:        $(hostname)"
 echo "gcc:       $(gcc --version | head -1)"
 echo "threads:   $THREADS"
 echo "schedule:  ${OMP_SCHEDULE:-(o que está no código)}"
-echo "md5 src:   $(md5sum src/MD.cpp)"
+echo "md5 src:   $(md5sum src/MD.cpp src/forces.c 2>/dev/null | tr '\n' ' ')"
 echo "CFLAGS:    $(grep '^CFLAGS' Makefile)"
+echo "KERNEL:    $(grep '^KERNEL_FLAGS' Makefile)"
 
 # binário para TEMPOS: exatamente o do Makefile
 make -s clean >/dev/null 2>&1; make -s md || exit 1
 # binário para %: mesmas flags + -g -fno-inline (cada função com o seu nome)
 CF=$(sed -n 's/^CFLAGS *= *//p' Makefile)
-gcc $CF -g -fno-inline -fno-omit-frame-pointer src/MD.cpp -lm -o md_prof || exit 1
+KF=$(sed -n 's/^KERNEL_FLAGS *= *//p' Makefile)
+PF="-g -fno-inline -fno-omit-frame-pointer"
+if [ -f src/forces.c ]; then
+  # versão com os kernels em ficheiro à parte (KERNEL_FLAGS só no forces.c)
+  gcc $CF $PF -x c -c src/MD.cpp -o prof_MD.o || exit 1
+  gcc $CF $KF $PF -c src/forces.c -o prof_forces.o || exit 1
+  gcc $CF prof_MD.o prof_forces.o -lm -o md_prof || exit 1
+  rm -f prof_MD.o prof_forces.o
+else
+  gcc $CF $PF src/MD.cpp -lm -o md_prof || exit 1
+fi
 
 export OMP_PROC_BIND=close OMP_PLACES=cores
 for T in $THREADS; do

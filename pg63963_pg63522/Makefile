@@ -1,7 +1,10 @@
 CC = gcc
 SRC = src/
-CFLAGS  = -x c -O3 -ffast-math -fopenmp -mcpu=a64fx
-REPCFLAGS = -x c -O3 -ffast-math -mcpu=a64fx -fopenmp -g
+CFLAGS  = -O3 -ffast-math -fopenmp -mcpu=a64fx -msve-vector-bits=512
+REPCFLAGS = $(CFLAGS) -g
+# flags extra só para os kernels O(N^2) (src/forces.c): divisão aproximada
+# (frecpe + Newton); a precisão total é recuperada no código (ver forces.c)
+KERNEL_FLAGS = -mlow-precision-div
 LDFLAGS = -Wl,--build-id=sha1
 
 BUS_PUS ?= 0,12,24,36
@@ -13,16 +16,19 @@ BUS_EVENTS = bus_read_total_mem,bus_write_total_mem
 .DEFAULT_GOAL = md
 .PHONY: clean cleanBenchmarks run runTest runRecord svecheck runSVECheck
 
-md: $(SRC)MD.cpp
-	$(CC) $(CFLAGS) $(SRC)MD.cpp -lm $(LDFLAGS) -o md
+OBJS = MD.o forces.o
+
+md: $(SRC)MD.cpp $(SRC)forces.c $(SRC)md.h
+	$(CC) $(CFLAGS) -x c -c $(SRC)MD.cpp -o MD.o
+	$(CC) $(CFLAGS) $(KERNEL_FLAGS) -c $(SRC)forces.c -o forces.o
+	$(CC) $(CFLAGS) $(OBJS) -lm $(LDFLAGS) -o md
 
 # Auto-teste dos kernels SVE contra a versão escalar (diagnóstico de NaN)
 svecheck: $(SRC)MD.cpp
 	$(CC) $(CFLAGS) -DMD_SVE_CHECK $(SRC)MD.cpp -lm $(LDFLAGS) -o md_check
 
 clean:
-	rm -f md_check
-	rm -f ./md \
+	rm -f ./md $(OBJS) \
 	    cp_average.txt \
 	    0_average.txt \
 	    cp_output.txt \
@@ -57,6 +63,8 @@ runTest:
 	echo; echo "== Contadores de memória (cores $(BUS_PUS)) =="; \
 	cat bus_counters.txt
 
-runRecord: $(SRC)MD.cpp
-	$(CC) $(REPCFLAGS) $(SRC)MD.cpp -lm $(LDFLAGS) -o md
+runRecord: $(SRC)MD.cpp $(SRC)forces.c $(SRC)md.h
+	$(CC) $(REPCFLAGS) -x c -c $(SRC)MD.cpp -o MD.o
+	$(CC) $(REPCFLAGS) $(KERNEL_FLAGS) -c $(SRC)forces.c -o forces.o
+	$(CC) $(REPCFLAGS) $(OBJS) -lm $(LDFLAGS) -o md
 	perf record -F 1000 -g ./md < inputdata.txt
