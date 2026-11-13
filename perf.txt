@@ -1,0 +1,205 @@
+ Percent |	Source code & Disassembly of md for cycles (14431 samples, percent: local period)
+-------------------------------------------------------------------------------------------------
+         :
+         :
+         :
+         :            Disassembly of section .text:
+         :
+         :            0000000000402260 <computeAccelerations._omp_fn.0>:
+         :            computeAccelerations._omp_fn.0():
+    0.00 :   402260: stp     x29, x30, [sp, #-432]!
+    0.00 :   402264: adrp    x0, 420000 <perror@GLIBC_2.17>
+    0.01 :   402268: mov     x29, sp
+    0.00 :   40226c: stp     x19, x20, [sp, #16]
+    0.00 :   402270: ldr     w19, [x0, #272]
+    0.00 :   402274: bl      400b90 <omp_get_num_threads@plt>
+    0.00 :   402278: mov     w20, w0
+    0.00 :   40227c: bl      400b30 <omp_get_thread_num@plt>
+    0.00 :   402280: sdiv    w7, w19, w20
+    0.00 :   402284: msub    w1, w7, w20, w19
+    0.00 :   402288: cmp     w0, w1
+    0.00 :   40228c: cinc    w7, w7, lt      // lt = tstop
+    0.00 :   402290: csel    w1, w1, wzr, ge // ge = tcont
+    0.00 :   402294: madd    w6, w7, w0, w1
+    0.00 :   402298: add     w7, w7, w6
+    0.00 :   40229c: cmp     w6, w7
+    0.00 :   4022a0: b.ge    402564 <computeAccelerations._omp_fn.0+0x304>  // b.tcont
+    0.00 :   4022a4: subs    w4, w19, #0x8
+    0.00 :   4022a8: adrp    x10, 46e000 <ry+0x9880>
+    0.00 :   4022ac: adrp    x9, 464000 <rz+0x94d0>
+    0.00 :   4022b0: adrp    x8, 45a000 <vx+0x9120>
+    0.00 :   4022b4: adrp    x13, 433000 <ay+0x9260>
+    0.00 :   4022b8: adrp    x12, 429000 <az+0x8eb0>
+    0.00 :   4022bc: adrp    x11, 420000 <perror@GLIBC_2.17>
+    0.00 :   4022c0: csel    w4, w4, wzr, cs // cs = hs, nlast
+    0.00 :   4022c4: sxtw    x6, w6
+    0.00 :   4022c8: add     x10, x10, #0x3d0
+    0.00 :   4022cc: add     x9, x9, #0x780
+    0.00 :   4022d0: add     x8, x8, #0xb30
+    0.00 :   4022d4: add     x13, x13, #0x9f0
+    0.00 :   4022d8: add     x12, x12, #0xda0
+    0.00 :   4022dc: add     x11, x11, #0x150
+    0.00 :   4022e0: whilelo p14.d, wzr, w4
+    0.00 :   4022e4: ptrue   p7.b, vl64
+    0.00 :   4022e8: fmov    z31.d, #2.000000000000000000e+00
+    0.00 :   4022ec: fmov    z30.d, #-1.000000000000000000e+00
+    0.00 :   4022f0: fmov    z29.d, #2.400000000000000000e+01
+    0.00 :   4022f4: str     d15, [sp, #32]
+    0.00 :   4022f8: movi    v15.4s, #0x0
+    0.00 :   4022fc: nop
+    0.01 :   402300: lsl     x5, x6, #3
+    0.00 :   402304: add     x0, x10, x5
+    0.00 :   402308: ldr     d27, [x0]
+    0.00 :   40230c: add     x0, x9, x5
+    0.01 :   402310: ldr     d26, [x0]
+    0.00 :   402314: add     x0, x8, x5
+    0.01 :   402318: ldr     d25, [x0]
+    0.00 :   40231c: stp     q15, q15, [sp, #48]
+    0.00 :   402320: stp     q15, q15, [sp, #80]
+    0.00 :   402324: stp     q15, q15, [sp, #112]
+    0.00 :   402328: stp     q15, q15, [sp, #144]
+    0.00 :   40232c: stp     q15, q15, [sp, #176]
+    0.00 :   402330: stp     q15, q15, [sp, #208]
+    0.00 :   402334: stp     q15, q15, [sp, #240]
+    0.00 :   402338: stp     q15, q15, [sp, #272]
+    0.00 :   40233c: stp     q15, q15, [sp, #304]
+    0.00 :   402340: stp     q15, q15, [sp, #336]
+    0.00 :   402344: stp     q15, q15, [sp, #368]
+    0.01 :   402348: stp     q15, q15, [sp, #400]
+    0.00 :   40234c: cmp     w19, #0x0
+    0.07 :   402350: b.le    402500 <computeAccelerations._omp_fn.0+0x2a0>
+    0.00 :   402354: mov     z27.d, d27
+    0.00 :   402358: mov     z26.d, d26
+    0.00 :   40235c: mov     z25.d, d25
+    0.00 :   402360: mov     z28.s, w6
+    0.00 :   402364: mov     p5.b, p14.b
+    0.00 :   402368: whilelo p6.d, wzr, w19
+    0.00 :   40236c: mov     x0, #0x0                        // #0
+    0.00 :   402370: mov     x3, x8
+    0.00 :   402374: mov     x2, x9
+    0.00 :   402378: mov     x1, x10
+    0.00 :   40237c: index   z24.s, #0, #1
+    1.10 :   402380: add     x14, sp, #0x170
+    0.02 :   402384: ld1d    {z21.d}, p6/z, [x2]
+    0.00 :   402388: ld1d    {z23.d}, p6/z, [x1]
+    0.00 :   40238c: ld1d    {z17.d}, p6/z, [x3]
+    1.20 :   402390: ld1d    {z20.d}, p5/z, [x2, #1, mul vl]
+    0.00 :   402394: ld1d    {z22.d}, p5/z, [x1, #1, mul vl]
+    0.06 :   402398: ld1d    {z16.d}, p5/z, [x3, #1, mul vl]
+    3.60 :   40239c: ld1d    {z5.d}, p5/z, [x14]
+   23.94 :   4023a0: fsub    z21.d, z26.d, z21.d
+    0.00 :   4023a4: fsub    z23.d, z27.d, z23.d
+    0.01 :   4023a8: fmul    z18.d, z21.d, z21.d
+    0.00 :   4023ac: fsub    z17.d, z25.d, z17.d
+    1.33 :   4023b0: fsub    z20.d, z26.d, z20.d
+    0.00 :   4023b4: fsub    z22.d, z27.d, z22.d
+    0.00 :   4023b8: fmul    z19.d, z20.d, z20.d
+    0.03 :   4023bc: fsub    z16.d, z25.d, z16.d
+    1.10 :   4023c0: add     x14, sp, #0xf0
+    0.00 :   4023c4: fmla    z18.d, p7/m, z23.d, z23.d
+    0.03 :   4023c8: fmla    z19.d, p7/m, z22.d, z22.d
+    0.03 :   4023cc: fmla    z18.d, p7/m, z17.d, z17.d
+    1.08 :   4023d0: fmla    z19.d, p7/m, z16.d, z16.d
+    0.04 :   4023d4: frecpe  z3.d, z18.d
+    0.11 :   4023d8: frecpe  z1.d, z19.d
+    0.04 :   4023dc: frecps  z2.d, z3.d, z18.d
+    1.27 :   4023e0: frecps  z0.d, z1.d, z19.d
+    0.08 :   4023e4: fmul    z3.d, z3.d, z2.d
+    0.43 :   4023e8: fmul    z1.d, z1.d, z0.d
+    0.00 :   4023ec: cmpne   p4.s, p7/z, z24.s, z28.s
+    1.21 :   4023f0: frecps  z2.d, z3.d, z18.d
+    0.36 :   4023f4: frecps  z0.d, z1.d, z19.d
+    0.20 :   4023f8: fmul    z2.d, z3.d, z2.d
+    0.55 :   4023fc: fmul    z0.d, z1.d, z0.d
+    1.30 :   402400: ld1d    {z1.d}, p5/z, [x14]
+    0.73 :   402404: fmsb    z19.d, p7/m, z0.d, z31.d
+    0.00 :   402408: add     x14, sp, #0x70
+    1.46 :   40240c: fmul    z19.d, z19.d, z0.d
+    3.52 :   402410: fmul    z3.d, z19.d, z19.d
+    0.01 :   402414: fmsb    z18.d, p7/m, z2.d, z31.d
+    1.47 :   402418: fadd    z19.d, z19.d, z19.d
+    0.03 :   40241c: fmul    z18.d, z2.d, z18.d
+    3.83 :   402420: fmad    z19.d, p7/m, z3.d, z30.d
+    0.89 :   402424: fmul    z2.d, z3.d, z3.d
+    0.00 :   402428: ld1d    {z3.d}, p5/z, [x14]
+    0.00 :   40242c: add     x14, sp, #0x130
+    3.44 :   402430: ld1d    {z4.d}, p6/z, [x14]
+    0.00 :   402434: punpkhi p3.h, p4.b
+    0.03 :   402438: fmul    z7.d, z18.d, z18.d
+    0.00 :   40243c: punpklo p4.h, p4.b
+    4.10 :   402440: fmul    z19.d, z19.d, z29.d
+    0.00 :   402444: add     x14, sp, #0xb0
+    0.00 :   402448: ld1d    {z0.d}, p6/z, [x14]
+    7.96 :   40244c: fmul    z19.d, z19.d, z2.d
+    6.24 :   402450: fadd    z18.d, z18.d, z18.d
+    0.01 :   402454: fmul    z6.d, z7.d, z7.d
+    0.01 :   402458: fmad    z18.d, p7/m, z7.d, z30.d
+    0.04 :   40245c: fmul    z18.d, z18.d, z29.d
+    0.91 :   402460: add     x14, sp, #0x30
+    0.75 :   402464: fmul    z18.d, z18.d, z6.d
+    0.00 :   402468: ld1d    {z2.d}, p6/z, [x14]
+    3.26 :   40246c: movprfx z17.d, p4/z, z17.d
+    0.00 :   402470: fmul    z17.d, p4/m, z17.d, z18.d
+    6.36 :   402474: fadd    z2.d, z2.d, z17.d
+    0.00 :   402478: st1d    {z2.d}, p6, [x14]
+    0.40 :   40247c: movprfx z16.d, p3/z, z16.d
+    0.00 :   402480: fmul    z16.d, p3/m, z16.d, z19.d
+    0.00 :   402484: add     x14, sp, #0x70
+    7.37 :   402488: fadd    z3.d, z3.d, z16.d
+    0.00 :   40248c: st1d    {z3.d}, p5, [x14]
+    0.00 :   402490: movprfx z21.d, p4/z, z21.d
+    0.00 :   402494: fmul    z21.d, p4/m, z21.d, z18.d
+    0.08 :   402498: fadd    z0.d, z0.d, z21.d
+    2.06 :   40249c: movprfx z20.d, p3/z, z20.d
+    0.00 :   4024a0: fmul    z20.d, p3/m, z20.d, z19.d
+    0.01 :   4024a4: fadd    z1.d, z1.d, z20.d
+    0.00 :   4024a8: add     x14, sp, #0xb0
+    0.00 :   4024ac: st1d    {z0.d}, p6, [x14]
+    0.96 :   4024b0: add     x0, x0, #0x10
+    0.00 :   4024b4: movprfx z19.d, p3/z, z19.d
+    0.00 :   4024b8: fmul    z19.d, p3/m, z19.d, z22.d
+    0.00 :   4024bc: movprfx z18.d, p4/z, z18.d
+    0.00 :   4024c0: fmul    z18.d, p4/m, z18.d, z23.d
+    0.05 :   4024c4: fadd    z5.d, z5.d, z19.d
+    1.06 :   4024c8: fadd    z4.d, z4.d, z18.d
+    0.00 :   4024cc: add     x14, sp, #0xf0
+    0.00 :   4024d0: st1d    {z1.d}, p5, [x14]
+    0.00 :   4024d4: add     x2, x2, #0x80
+    1.12 :   4024d8: add     x1, x1, #0x80
+    0.00 :   4024dc: add     x3, x3, #0x80
+    0.00 :   4024e0: add     z24.s, z24.s, #16
+    0.00 :   4024e4: add     x14, sp, #0x130
+    1.11 :   4024e8: st1d    {z4.d}, p6, [x14]
+    0.00 :   4024ec: add     x14, sp, #0x170
+    0.00 :   4024f0: st1d    {z5.d}, p5, [x14]
+    0.00 :   4024f4: whilelo p5.d, w0, w4
+    1.03 :   4024f8: whilelo p6.d, w0, w19
+    0.00 :   4024fc: b.ne    402380 <computeAccelerations._omp_fn.0+0x120>  // b.any
+    0.01 :   402500: add     x0, sp, #0x30
+    0.02 :   402504: ld1d    {z18.d}, p7/z, [x0]
+    0.09 :   402508: add     x6, x6, #0x1
+    0.00 :   40250c: add     x0, sp, #0x70
+    0.01 :   402510: ld1d    {z1.d}, p7/z, [x0]
+    0.02 :   402514: fadd    z18.d, p7/m, z18.d, z1.d
+    0.03 :   402518: faddv   d18, p7, z18.d
+    0.16 :   40251c: str     d18, [x11, x5]
+    0.00 :   402520: add     x0, sp, #0xb0
+    0.00 :   402524: ld1d    {z19.d}, p7/z, [x0]
+    0.01 :   402528: add     x0, sp, #0xf0
+    0.00 :   40252c: ld1d    {z0.d}, p7/z, [x0]
+    0.00 :   402530: fadd    z19.d, p7/m, z19.d, z0.d
+    0.00 :   402534: faddv   d19, p7, z19.d
+    0.02 :   402538: str     d19, [x12, x5]
+    0.00 :   40253c: add     x0, sp, #0x130
+    0.00 :   402540: ld1d    {z5.d}, p7/z, [x0]
+    0.00 :   402544: add     x0, sp, #0x170
+    0.02 :   402548: ld1d    {z4.d}, p7/z, [x0]
+    0.01 :   40254c: fadd    z5.d, p7/m, z5.d, z4.d
+    0.00 :   402550: faddv   d5, p7, z5.d
+    0.05 :   402554: str     d5, [x13, x5]
+    0.01 :   402558: cmp     w7, w6
+    0.00 :   40255c: b.gt    402300 <computeAccelerations._omp_fn.0+0xa0>
+    0.00 :   402560: ldr     d15, [sp, #32]
+    0.00 :   402564: ldp     x19, x20, [sp, #16]
+    0.00 :   402568: ldp     x29, x30, [sp], #432
+    0.00 :   40256c: ret
