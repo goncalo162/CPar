@@ -1,52 +1,26 @@
 /*
- MD.c - Lennard-Jones molecular dynamics (noble gases)
- OpenMP. Versão otimizada SEM cutoff e SEM cell lists, para manter
- resultados identicos (12+ algarismos significativos) a referencia:
-
-   - Todos os pares O(N^2) calculados, na mesma ordem e com as
-     mesmas operacoes da versao de referencia.
-   - Layout SoA: r[3][MAXPART], v, a -> acessos contiguos sobre j,
-     carregamentos SIMD eficientes, arrays alinhados a 64 bytes.
-   - Energia potencial fundida no kernel de forcas (PotAcc):
-     elimina um passe O(N^2) inteiro por passo.
-   - Teste r2 > 0 em vez de i == j (mesmos bits, vetoriza melhor).
-   - KE e <v^2> calculados num unico passe fundido (mesma ordem
-     de soma -> mesmos bits).
-   - Inicializacao das posicoes paralelizada (first-touch NUMA).
-
- Compilar:
-   gcc -O3 -march=native -fopenmp MD.c -o MD -lm
- Execucao (afinidade ajuda em maquinas multi-socket):
-   OMP_PROC_BIND=close OMP_PLACES=cores ./MD
+    MD.c - Lennard-Jones molecular dynamics
+    OpenMP + SIMD optimized version using SoA positions.
 */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
 #include <stdbool.h>
 #include <omp.h>
+#include <arm_sve.h> /* SIMD nativo do A64FX (SVE) */
 
 #define MAXPART 5001
-#define DIM 3
 
 int N;
-
-/* Parametros reduzidos do potencial */
 double sigma = 1.0, epsilon = 1.0, m = 1.0, kB = 1.0;
-
-/* Constantes fisicas / conversoes */
 double NA = 6.022140857e23;
 double kBSI = 1.38064852e-23;
+double L, Tinit;
 
-double L;        /* lado da caixa */
-double Tinit;    /* temperatura inicial reduzida */
-
-/* Layout SoA: r[k][i] = coordenada k da particula i.
-   Alinhado a 64 bytes para carregamentos SIMD. */
-static double r[DIM][MAXPART] __attribute__((aligned(64)));
-static double v[DIM][MAXPART] __attribute__((aligned(64)));
-static double a[DIM][MAXPART] __attribute__((aligned(64)));
+double rx[MAXPART], ry[MAXPART], rz[MAXPART];
+double vx[MAXPART], vy[MAXPART], vz[MAXPART];
+double ax[MAXPART], ay[MAXPART], az[MAXPART];
 
 char atype[10];
 
@@ -56,16 +30,11 @@ void computeAccelerations(void);
 double gaussdist(void);
 void initializeVelocities(void);
 double Potential(void);
-void Thermo(double *mvs, double *ke);
 double MeanSquaredVelocity(void);
 double Kinetic(void);
-
-static double PotAcc = 0.0;   /* energia potencial do ultimo passo */
-
-
-/* =========================================================
-   MAIN
-   ========================================================= */
+#if defined(MD_SVE_CHECK)
+void sveSelfCheck(void);
+#endif
 
 int main(void)
 {
@@ -73,17 +42,13 @@ int main(void)
     double dt, Vol, Temp, Press, Pavg, Tavg, rho;
     double VolFac, TempFac, PressFac, timefac;
     double KE, PE, mvs, gc, Z;
-
     char prefix[1000], tfn[1100], ofn[1100], afn[1100];
-
     FILE *tfp, *ofp, *afp;
 
     printf("\n  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
     printf("                  WELCOME TO WILLY P CHEM MD!\n");
     printf("  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-
     printf("\n  ENTER A TITLE FOR YOUR CALCULATION!\n");
-
     if (scanf("%999s", prefix) != 1)
         return EXIT_FAILURE;
 
@@ -91,414 +56,410 @@ int main(void)
     snprintf(ofn, sizeof ofn, "%s_output.txt", prefix);
     snprintf(afn, sizeof afn, "%s_average.txt", prefix);
 
-
-    /* Select gas */
-
     printf("\n  WHICH NOBLE GAS WOULD YOU LIKE TO SIMULATE? (DEFAULT IS ARGON)\n");
     printf("  Type He, Ne, Ar, Kr, or Xe:\n");
-
     if (scanf("%9s", atype) != 1)
         return EXIT_FAILURE;
 
-
-    if (strcmp(atype, "He") == 0) {
-
+    if (strcmp(atype, "He") == 0)
+    {
         VolFac = 1.8399744000000005e-29;
         PressFac = 8152287.336171632;
         TempFac = 10.864459551225972;
         timefac = 1.7572698825166272e-12;
-
-    } else if (strcmp(atype, "Ne") == 0) {
-
+    }
+    else if (strcmp(atype, "Ne") == 0)
+    {
         VolFac = 2.0570823999999997e-29;
         PressFac = 27223022.27659913;
         TempFac = 40.560648991243625;
         timefac = 2.1192341945685407e-12;
-
-    } else if (strcmp(atype, "Ar") == 0) {
-
+    }
+    else if (strcmp(atype, "Ar") == 0)
+    {
         VolFac = 3.7949992920124995e-29;
         PressFac = 51695201.06691862;
         TempFac = 142.095;
         timefac = 2.09618e-12;
-
-    } else if (strcmp(atype, "Kr") == 0) {
-
+    }
+    else if (strcmp(atype, "Kr") == 0)
+    {
         VolFac = 4.5882712000000004e-29;
-        PressFac = 59935428.402750031;
+        PressFac = 59935428.40275003;
         TempFac = 199.1817584391428;
         timefac = 8.051563913585078e-13;
-
-    } else if (strcmp(atype, "Xe") == 0) {
-
+    }
+    else if (strcmp(atype, "Xe") == 0)
+    {
         VolFac = 5.4872e-29;
         PressFac = 70527773.72794868;
         TempFac = 280.30305642163006;
         timefac = 9.018957925790732e-13;
-
-    } else {
-
+    }
+    else
+    {
         strcpy(atype, "Ar");
-
         VolFac = 3.7949992920124995e-29;
         PressFac = 51695201.06691862;
         TempFac = 142.095;
         timefac = 2.09618e-12;
     }
 
-
     printf("\n  YOU ARE SIMULATING %s GAS!\n", atype);
-
     printf("\n  ENTER THE INITIAL TEMPERATURE IN KELVIN:\n");
-
-    if (scanf("%lf", &Tinit) != 1 || Tinit < 0.0) {
+    if (scanf("%lf", &Tinit) != 1 || Tinit < 0.0)
+    {
         fprintf(stderr, "Temperature must be a non-negative number.\n");
         return EXIT_FAILURE;
     }
-
     Tinit /= TempFac;
 
-
-    /* Density */
-
     printf("\n  ENTER THE NUMBER DENSITY IN moles/m^3:\n");
-
-    if (scanf("%lf", &rho) != 1 || rho <= 0.0) {
+    if (scanf("%lf", &rho) != 1 || rho <= 0.0)
+    {
         fprintf(stderr, "Density must be positive.\n");
         return EXIT_FAILURE;
     }
 
     N = 5000;
-
     Vol = N / (rho * NA);
     Vol /= VolFac;
 
-
-    if (N >= MAXPART) {
-        fprintf(stderr, "Maximum number of particles is %d\n",
-                MAXPART - 1);
+    if (N >= MAXPART)
+    {
+        fprintf(stderr, "Maximum number of particles is %d\n", MAXPART - 1);
         return EXIT_FAILURE;
     }
-
-    if (Vol < N) {
+    if (Vol < N)
+    {
         fprintf(stderr, "Density too high: available volume is too small.\n");
         return EXIT_FAILURE;
     }
 
     L = cbrt(Vol);
 
-
-    /* Open output files */
-
     tfp = fopen(tfn, "w");
     ofp = fopen(ofn, "w");
     afp = fopen(afn, "w");
-
-    if (!tfp || !ofp || !afp) {
-
+    if (!tfp || !ofp || !afp)
+    {
         perror("Could not open output file");
-
-        if (tfp) fclose(tfp);
-        if (ofp) fclose(ofp);
-        if (afp) fclose(afp);
-
+        if (tfp)
+            fclose(tfp);
+        if (ofp)
+            fclose(ofp);
+        if (afp)
+            fclose(afp);
         return EXIT_FAILURE;
     }
 
-
-    /* Time parameters */
-
     int NumTime;
-
-    if (strcmp(atype, "He") == 0) {
-
+    if (strcmp(atype, "He") == 0)
+    {
         dt = 0.2e-14 / timefac;
         NumTime = 50000;
-
-    } else {
-
+    }
+    else
+    {
         dt = 0.5e-14 / timefac;
         NumTime = 200;
     }
-
-
-    /* Initialization */
-
+    // avaliar estes dois inits
     initialize();
-
     computeAccelerations();
+#if defined(MD_SVE_CHECK)
+    sveSelfCheck();
+#endif
 
     fprintf(tfp, "%d\n", N);
-
     Pavg = 0.0;
     Tavg = 0.0;
 
     int tenp = NumTime / 10;
-
-    fprintf(ofp,
-        "time (s) T(t) (K) P(t) (Pa) "
-        "Kinetic En. (n.u.) Potential En. (n.u.) Total En. (n.u.)\n");
-
+    fprintf(ofp, "time (s) T(t) (K) P(t) (Pa) Kinetic En. (n.u.) Potential En. (n.u.) Total En. (n.u.)\n");
     printf("PERCENTAGE OF CALCULATION COMPLETE:\n[");
 
-
-    /* Main simulation loop */
-
-    for (i = 0; i < NumTime + 1; i++) {
-
-        if (tenp > 0 && i > 0 && i % tenp == 0) {
-
+    // Aqui entra no loop princiapal
+    for (i = 0; i < NumTime + 1; i++)
+    {
+        if (tenp > 0 && i > 0 && i % tenp == 0)
+        {
             int percent = (int)(100.0 * i / NumTime);
-
             if (percent > 100)
                 percent = 100;
-
             printf(" %d%% |", percent);
             fflush(stdout);
         }
 
-
         Press = VelocityVerlet(dt, i + 1, tfp) * PressFac;
-
-        /* KE e <v^2> num unico passe (mesma ordem de soma que
-           as duas funcoes separadas da referencia) */
-        Thermo(&mvs, &KE);
-
+        mvs = MeanSquaredVelocity();
+        KE = Kinetic();
         PE = Potential();
 
-
         Temp = m * mvs / (3.0 * kB) * TempFac;
-
-
-        if (Temp != 0.0) {
-
+        if (Temp != 0.0)
+        {
             gc = NA * Press * (Vol * VolFac) / (N * Temp);
-
             Z = Press * (Vol * VolFac) / (N * kBSI * Temp);
-
-        } else {
-
+        }
+        else
+        {
             gc = 0.0;
             Z = 0.0;
         }
 
-
         Tavg += Temp;
         Pavg += Press;
 
-
-        fprintf(ofp,
-            "%8.4e %20.8f %20.8f %20.8f %20.8f %20.8f\n",
-            i * dt * timefac,
-            Temp,
-            Press,
-            KE,
-            PE,
-            KE + PE);
+        fprintf(ofp, "%8.4e %20.8f %20.8f %20.8f %20.8f %20.8f\n",
+                i * dt * timefac, Temp, Press, KE, PE, KE + PE);
     }
-
-
-    /* Average values */
 
     Pavg /= NumTime;
     Tavg /= NumTime;
-
     Z = Pavg * (Vol * VolFac) / (N * kBSI * Tavg);
-
     gc = NA * Pavg * (Vol * VolFac) / (N * Tavg);
 
+    fprintf(afp, "Total Time (s) T (K) P (Pa) PV/nT (J/(mol K)) Z V (m^3) N\n");
+    fprintf(afp, "%8.4e %15.5f %15.5f %10.5f %10.5f %10.5e %d\n",
+            (NumTime + 1) * dt * timefac, Tavg, Pavg, gc, Z, Vol * VolFac, N);
 
-    fprintf(afp,
-        "Total Time (s) T (K) P (Pa) PV/nT (J/(mol K)) Z V (m^3) N\n");
-
-    fprintf(afp,
-        "%8.4e %15.5f %15.5f %10.5f %10.5f %10.5e %d\n",
-        (NumTime + 1) * dt * timefac,
-        Tavg,
-        Pavg,
-        gc,
-        Z,
-        Vol * VolFac,
-        N);
-
-
-    printf("\nSimulation complete.\n");
-
-    printf("Trajectory: %s\n", tfn);
-    printf("Output: %s\n", ofn);
-    printf("Averages: %s\n", afn);
-
-    printf("Average temperature (K): %.5f\n", Tavg);
-    printf("Average pressure (Pa): %.5f\n", Pavg);
-
-    printf("PV/nT (J mol^-1 K^-1): %.5f\n", gc);
-    printf("Compressibility: %.5f\n", Z);
-
+    printf("\nSimulation complete.\nTrajectory: %s\nOutput: %s\nAverages: %s\n", tfn, ofn, afn);
+    printf("Average temperature (K): %.5f\nAverage pressure (Pa): %.5f\n", Tavg, Pavg);
+    printf("PV/nT (J mol^-1 K^-1): %.5f\nCompressibility: %.5f\n", gc, Z);
     printf("Percent error in gas constant: %.5f%%\n",
-        100.0 * fabs(gc - 8.3144598) / 8.3144598);
-
+           100.0 * fabs(gc - 8.3144598) / 8.3144598);
 
     fclose(tfp);
     fclose(ofp);
     fclose(afp);
-
     return EXIT_SUCCESS;
 }
 
-
-/* =========================================================
-   INITIALIZE POSITIONS
-   Paralelizado: first-touch NUMA (as paginas ficam distribuidas
-   pelas threads que as vao usar no kernel O(N^2)).
-   ========================================================= */
-
 void initialize(void)
 {
-    const int n = (int)ceil(cbrt((double)N));
+    int n = (int)ceil(cbrt((double)N));
+    double pos = L / n;
+    int p = 0;
 
-    const double pos = L / n;
-
-    /* mesma expressao (i+0.5)*pos da versao original: p percorre
-       o mesmo mapeamento (i,j,k) da tripla original */
-    #pragma omp parallel for schedule(static)
-    for (int p = 0; p < N; p++) {
-
-        const int i = p / (n * n);
-        const int j = (p / n) % n;
-        const int k = p % n;
-
-        r[0][p] = (i + 0.5) * pos;
-        r[1][p] = (j + 0.5) * pos;
-        r[2][p] = (k + 0.5) * pos;
+    for (int i = 0; i < n; i++)
+    {
+        for (int j = 0; j < n; j++)
+        {
+            for (int k = 0; k < n; k++)
+            {
+                if (p < N)
+                {
+                    rx[p] = (i + 0.5) * pos;
+                    ry[p] = (j + 0.5) * pos;
+                    rz[p] = (k + 0.5) * pos;
+                }
+                p++;
+            }
+        }
     }
-
     initializeVelocities();
-}
-
-
-/* =========================================================
-   THERMO: <v^2> e energia cinetica num unico passe.
-   As somas por thread percorrem os mesmos intervalos de i com
-   a mesma ordem -> resultados bitwise identicos as versoes
-   separadas (para um numero fixo de threads).
-   ========================================================= */
-
-void Thermo(double *mvs, double *ke)
-{
-    double sum = 0.0;
-    double kin = 0.0;
-
-    #pragma omp parallel for reduction(+:sum,kin) schedule(static)
-    for (int i = 0; i < N; i++) {
-
-        const double vx = v[0][i];
-        const double vy = v[1][i];
-        const double vz = v[2][i];
-
-        const double s = vx * vx + vy * vy + vz * vz;
-
-        sum += s;
-        kin += 0.5 * m * s;
-    }
-
-    *mvs = sum / N;
-    *ke  = kin;
 }
 
 double MeanSquaredVelocity(void)
 {
-    double mvs, ke;
-    Thermo(&mvs, &ke);
-    return mvs;
+    double sx = 0.0, sy = 0.0, sz = 0.0;
+
+#pragma omp parallel for reduction(+ : sx, sy, sz) schedule(static 1)
+    for (int i = 0; i < N; i++)
+    {
+        sx += vx[i] * vx[i];
+        sy += vy[i] * vy[i];
+        sz += vz[i] * vz[i];
+    }
+    return (sx + sy + sz) / N;
 }
 
 double Kinetic(void)
 {
-    double mvs, ke;
-    Thermo(&mvs, &ke);
-    return ke;
+    double kin = 0.0;
+
+#pragma omp parallel for reduction(+ : kin) schedule(static 1)
+    for (int i = 0; i < N; i++)
+    {
+        kin += 0.5 * m * (vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]);
+    }
+    return kin;
 }
 
+/* Linha i da soma de pares do potencial (loop vetorial SVE; o predicado
+   whilelt trata o resto e zeroa as lanes inativas). */
+static inline double potRow(int i, double sig2, double factor)
+{
+    const double xi = rx[i], yi = ry[i], zi = rz[i];
 
-/* =========================================================
-   POTENTIAL ENERGY (fundida no kernel de forcas)
-   ========================================================= */
+    const svfloat64_t xiv = svdup_f64(xi);
+    const svfloat64_t yiv = svdup_f64(yi);
+    const svfloat64_t ziv = svdup_f64(zi);
+    const svfloat64_t s2v = svdup_f64(sig2);
+    const svfloat64_t fv = svdup_f64(factor);
+    svfloat64_t acc = svdup_f64(0.0);
+
+    for (int j = i + 1; j < N; j += (int)svcntd())
+    {
+        const svbool_t pg = svwhilelt_b64((uint64_t)j, (uint64_t)N);
+
+        const svfloat64_t dx = svsub_f64_z(pg, xiv, svld1_f64(pg, &rx[j]));
+        const svfloat64_t dy = svsub_f64_z(pg, yiv, svld1_f64(pg, &ry[j]));
+        const svfloat64_t dz = svsub_f64_z(pg, ziv, svld1_f64(pg, &rz[j]));
+
+        const svfloat64_t r2 = svmla_f64_z(pg, dx, dx,
+                                           svmla_f64_z(pg, dy, dy,
+                                                       svmul_f64_z(pg, dz, dz)));
+
+        const svfloat64_t q2 = svdiv_f64_z(pg, s2v, r2);
+        const svfloat64_t q6 = svmul_f64_z(pg, svmul_f64_z(pg, q2, q2), q2);
+        const svfloat64_t t = svsub_f64_z(pg, svmul_f64_z(pg, q6, q6), q6);
+
+        acc = svmla_f64_m(pg, acc, t, fv);
+    }
+    return svaddv_f64(svptrue_b64(), acc);
+}
 
 double Potential(void)
 {
-    /* Valor do ultimo computeAccelerations(): as posicoes nao
-       mudam entre a atualizacao das aceleracoes e esta chamada. */
-    return PotAcc;
+    double Pot = 0.0;
+    const double sig2 = sigma * sigma;
+    const double factor = 4.0 * epsilon;
+
+#pragma omp parallel for reduction(+ : Pot) schedule(static 1)
+    for (int i = 0; i < N - 1; i++)
+    {
+        Pot += potRow(i, sig2, factor);
+    }
+    return 2.0 * Pot; // O original conta cada par duas vezes, multiplicar para comparar
 }
 
+/* Linha i da matriz N x N de acelerações (loop vetorial SVE). O elemento
+   diagonal (j == i, com r2 == 0) é excluído pelo predicado pgd, sem ramos. */
+static inline void computeAccelRow(int i)
+{
+    const double xi = rx[i];
+    const double yi = ry[i];
+    const double zi = rz[i];
 
-/* =========================================================
-   COMPUTE ACCELERATIONS  (todos os pares, ordem identica)
-   ========================================================= */
+    const svfloat64_t xiv = svdup_f64(xi);
+    const svfloat64_t yiv = svdup_f64(yi);
+    const svfloat64_t ziv = svdup_f64(zi);
+    const svfloat64_t one = svdup_f64(1.0);
+    const svfloat64_t c24 = svdup_f64(24.0);
+    const svfloat64_t two = svdup_f64(2.0);
+    svfloat64_t fx = svdup_f64(0.0);
+    svfloat64_t fy = svdup_f64(0.0);
+    svfloat64_t fz = svdup_f64(0.0);
+
+    for (int j = 0; j < N; j += (int)svcntd())
+    {
+        const svbool_t pg = svwhilelt_b64((uint64_t)j, (uint64_t)N);
+        /* lanes ativas E j != i (comparador em inteiros: o predicador é
+           agnóstico do tipo de elemento) */
+        const svbool_t pgd = svcmpne_n_s64(pg, svindex_s64((uint64_t)j, 1), i);
+
+        const svfloat64_t dx = svsub_f64_z(pg, xiv, svld1_f64(pg, &rx[j]));
+        const svfloat64_t dy = svsub_f64_z(pg, yiv, svld1_f64(pg, &ry[j]));
+        const svfloat64_t dz = svsub_f64_z(pg, ziv, svld1_f64(pg, &rz[j]));
+
+        const svfloat64_t r2 = svmla_f64_z(pg, dx, dx,
+                                           svmla_f64_z(pg, dy, dy,
+                                                       svmul_f64_z(pg, dz, dz)));
+
+        const svfloat64_t inv2 = svdiv_f64_z(pgd, one, r2);
+        const svfloat64_t inv4 = svmul_f64_z(pgd, inv2, inv2);
+        const svfloat64_t inv8 = svmul_f64_z(pgd, inv4, inv4);
+        const svfloat64_t inv14 = svmul_f64_z(pgd, svmul_f64_z(pgd, inv8, inv4), inv2);
+        const svfloat64_t f = svsub_f64_z(pgd, svmul_f64_z(pgd, inv14, two), inv8);
+        const svfloat64_t f24 = svmul_f64_z(pgd, f, c24);
+
+        fx = svmla_f64_m(pgd, fx, dx, f24);
+        fy = svmla_f64_m(pgd, fy, dy, f24);
+        fz = svmla_f64_m(pgd, fz, dz, f24);
+    }
+
+    ax[i] = svaddv_f64(svptrue_b64(), fx);
+    ay[i] = svaddv_f64(svptrue_b64(), fy);
+    az[i] = svaddv_f64(svptrue_b64(), fz);
+}
 
 void computeAccelerations(void)
 {
-    double Pot = 0.0;
+#pragma omp parallel for schedule(static 1)
+    for (int i = 0; i < N; i++)
+    {
+        computeAccelRow(i);
+    }
+}
 
-    const double sig2   = sigma * sigma;
-    const double factor = 4.0 * epsilon;
+#if defined(MD_SVE_CHECK)
+/* Auto-teste: imprime o comprimento vetorial SVE em runtime e compara os
+   kernels SVE com o cálculo escalar no estado inicial (1 chamada, O(N^2)). */
+void sveSelfCheck(void)
+{
+    fprintf(stderr, "[MD_SVE_CHECK] svcntd = %d doubles (SVE de %d bits)\n",
+            (int)svcntd(), (int)(64 * svcntd()));
 
-    #pragma omp parallel for schedule(static) reduction(+:Pot)
-    for (int i = 0; i < N; i++) {
+    /* Acelerações: linhas 0, 1, N/2 e N-1 */
+    double maxerr = 0.0;
+    const int samples[4] = {0, 1, N / 2, N - 1};
+    for (int s = 0; s < 4; s++)
+    {
+        const int i = samples[s];
+        double fx = 0.0, fy = 0.0, fz = 0.0;
 
-        const double xi = r[0][i];
-        const double yi = r[1][i];
-        const double zi = r[2][i];
-
-        double fx = 0.0;
-        double fy = 0.0;
-        double fz = 0.0;
-        double pe = 0.0;
-
-        /* loop contiguo sobre j: carregamentos SIMD com SoA */
-        for (int j = 0; j < N; j++) {
-
-            const double dx = xi - r[0][j];
-            const double dy = yi - r[1][j];
-            const double dz = zi - r[2][j];
-
-            const double r2 = dx*dx + dy*dy + dz*dz;
-
-            /* r2 == 0 apenas no auto-par (i == j); mesmo resultado
-               que o teste i == j da referencia, mas vetorizavel */
-            const double inv2 = (r2 > 0.0) ? 1.0 / r2 : 0.0;
-
-            const double inv4  = inv2 * inv2;
-            const double inv8  = inv4 * inv4;
+        for (int j = 0; j < N; j++)
+        {
+            if (j == i)
+                continue;
+            const double dx = rx[i] - rx[j];
+            const double dy = ry[i] - ry[j];
+            const double dz = rz[i] - rz[j];
+            const double r2 = dx * dx + dy * dy + dz * dz;
+            const double inv2 = 1.0 / r2;
+            const double inv4 = inv2 * inv2;
+            const double inv8 = inv4 * inv4;
             const double inv14 = inv8 * inv4 * inv2;
-
-            const double f = 24.0 * epsilon * (2.0 * inv14 - inv8);
-
+            const double f = 24.0 * (2.0 * inv14 - inv8);
             fx += dx * f;
             fy += dy * f;
             fz += dz * f;
-
-            const double q2 = sig2 * inv2;
-            const double q6 = q2 * q2 * q2;
-
-            pe += q6 * q6 - q6;
         }
 
-        a[0][i] = fx / m;
-        a[1][i] = fy / m;
-        a[2][i] = fz / m;
+        computeAccelRow(i);
 
-        /* mesma forma da versao de referencia: Pot += factor * pe */
-        Pot += factor * pe;
+        const double ex[3] = {ax[i], ay[i], az[i]};
+        const double ref[3] = {fx, fy, fz};
+        for (int c = 0; c < 3; c++)
+            maxerr = fmax(maxerr,
+                          fabs(ex[c] - ref[c]) / (fabs(ref[c]) + 1e-300));
     }
+    fprintf(stderr, "[MD_SVE_CHECK] aceleracoes: desvio relativo max = %.3e %s\n",
+            maxerr, maxerr < 1e-9 ? "(OK)" : "(FALHOU!)");
 
-    PotAcc = Pot;
+    /* Potencial completo (2x por causa do fator do Potential()) */
+    double potRef = 0.0;
+    for (int i = 0; i < N - 1; i++)
+    {
+        for (int j = i + 1; j < N; j++)
+        {
+            const double dx = rx[i] - rx[j];
+            const double dy = ry[i] - ry[j];
+            const double dz = rz[i] - rz[j];
+            const double r2 = dx * dx + dy * dy + dz * dz;
+            const double q2 = sigma * sigma / r2;
+            const double q6 = q2 * q2 * q2;
+            potRef += 4.0 * epsilon * (q6 * q6 - q6);
+        }
+    }
+    const double potSve = Potential();
+    const double perr = fabs(potSve - 2.0 * potRef) / (fabs(2.0 * potRef) + 1e-300);
+    fprintf(stderr, "[MD_SVE_CHECK] potencial: ref = %.15g  sve = %.15g  desvio = %.3e %s\n",
+            2.0 * potRef, potSve, perr, perr < 1e-9 ? "(OK)" : "(FALHOU!)");
 }
-
-
-/* =========================================================
-   VELOCITY VERLET
-   ========================================================= */
+#endif
 
 double VelocityVerlet(double dt, int iter, FILE *fp)
 {
@@ -506,149 +467,127 @@ double VelocityVerlet(double dt, int iter, FILE *fp)
     (void)fp;
 
     double psum = 0.0;
-
-    const double half_dt  = 0.5 * dt;
+    const double half_dt = 0.5 * dt;
     const double half_dt2 = 0.5 * dt * dt;
 
+/* Primeira metade do passo: posições + primeira metade das velocidades. */
+#pragma omp parallel for schedule(static 1)
+    for (int i = 0; i < N; i++)
+    {
+        rx[i] += vx[i] * dt + ax[i] * half_dt2;
+        ry[i] += vy[i] * dt + ay[i] * half_dt2;
+        rz[i] += vz[i] * dt + az[i] * half_dt2;
 
-    /* First half of the timestep */
-
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < N; i++) {
-
-        for (int k = 0; k < DIM; k++) {
-
-            r[k][i] += v[k][i] * dt
-                     + a[k][i] * half_dt2;
-
-            v[k][i] += a[k][i] * half_dt;
-        }
+        vx[i] += ax[i] * half_dt;
+        vy[i] += ay[i] * half_dt;
+        vz[i] += az[i] * half_dt;
     }
-
-
-    /* Recalculate accelerations */
 
     computeAccelerations();
 
+/* Segunda metade do passo + pressão nas paredes. */
+#pragma omp parallel for schedule(static 1) reduction(+ : psum)
+    for (int i = 0; i < N; i++)
+    {
+        vx[i] += ax[i] * half_dt;
+        vy[i] += ay[i] * half_dt;
+        vz[i] += az[i] * half_dt;
 
-    /* Second half of the timestep and wall pressure */
+        if (rx[i] < 0.0)
+        {
+            vx[i] = -vx[i];
+            psum += 2.0 * m * fabs(vx[i]) / dt;
+        }
+        else if (rx[i] >= L)
+        {
+            vx[i] = -vx[i];
+            psum += 2.0 * m * fabs(vx[i]) / dt;
+        }
 
-    #pragma omp parallel for schedule(static) reduction(+:psum)
-    for (int i = 0; i < N; i++) {
+        if (ry[i] < 0.0)
+        {
+            vy[i] = -vy[i];
+            psum += 2.0 * m * fabs(vy[i]) / dt;
+        }
+        else if (ry[i] >= L)
+        {
+            vy[i] = -vy[i];
+            psum += 2.0 * m * fabs(vy[i]) / dt;
+        }
 
-        for (int k = 0; k < DIM; k++) {
-
-            v[k][i] += a[k][i] * half_dt;
-
-            if (r[k][i] < 0.0 || r[k][i] >= L) {
-
-                v[k][i] = -v[k][i];
-
-                psum += 2.0 * m * fabs(v[k][i]) / dt;
-            }
+        if (rz[i] < 0.0)
+        {
+            vz[i] = -vz[i];
+            psum += 2.0 * m * fabs(vz[i]) / dt;
+        }
+        else if (rz[i] >= L)
+        {
+            vz[i] = -vz[i];
+            psum += 2.0 * m * fabs(vz[i]) / dt;
         }
     }
 
     return psum / (6.0 * L * L);
 }
 
-
-/* =========================================================
-   INITIALIZE VELOCITIES
-   ========================================================= */
-
 void initializeVelocities(void)
 {
-    double vCMx = 0.0;
-    double vCMy = 0.0;
-    double vCMz = 0.0;
+    double vCMx = 0.0, vCMy = 0.0, vCMz = 0.0;
+    double vSqdSum = 0.0, lambda;
 
-    double vSqdSum = 0.0;
-    double lambda;
-
-
-    /* Generate random velocities */
-
-    for (int i = 0; i < N; i++) {
-
-        v[0][i] = gaussdist();
-        v[1][i] = gaussdist();
-        v[2][i] = gaussdist();
-
-        vCMx += m * v[0][i];
-        vCMy += m * v[1][i];
-        vCMz += m * v[2][i];
+    for (int i = 0; i < N; i++)
+    {
+        vx[i] = gaussdist();
+        vy[i] = gaussdist();
+        vz[i] = gaussdist();
+        vCMx += m * vx[i];
+        vCMy += m * vy[i];
+        vCMz += m * vz[i];
     }
-
-
-    /* Calculate center of mass velocity */
 
     vCMx /= N * m;
     vCMy /= N * m;
     vCMz /= N * m;
 
-
-    /* Remove center of mass velocity */
-
-    for (int i = 0; i < N; i++) {
-
-        v[0][i] -= vCMx;
-        v[1][i] -= vCMy;
-        v[2][i] -= vCMz;
-
-        vSqdSum += v[0][i] * v[0][i]
-                 + v[1][i] * v[1][i]
-                 + v[2][i] * v[2][i];
+    for (int i = 0; i < N; i++)
+    {
+        vx[i] -= vCMx;
+        vy[i] -= vCMy;
+        vz[i] -= vCMz;
+        vSqdSum += vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i];
     }
-
-
-    /* Scale velocities to initial temperature */
 
     lambda = sqrt(3.0 * (N - 1) * Tinit / vSqdSum);
 
-
-    for (int i = 0; i < N; i++) {
-
-        v[0][i] *= lambda;
-        v[1][i] *= lambda;
-        v[2][i] *= lambda;
+    for (int i = 0; i < N; i++)
+    {
+        vx[i] *= lambda;
+        vy[i] *= lambda;
+        vz[i] *= lambda;
     }
 }
-
-
-/* =========================================================
-   GAUSSIAN DISTRIBUTION
-   ========================================================= */
 
 double gaussdist(void)
 {
     static bool available = false;
     static double gset;
-
     double fac, rsq, v1, v2;
 
-    if (!available) {
-
-        do {
-
+    if (!available)
+    {
+        do
+        {
             v1 = 2.0 * rand() / (double)RAND_MAX - 1.0;
             v2 = 2.0 * rand() / (double)RAND_MAX - 1.0;
-
-            rsq = v1*v1 + v2*v2;
-
+            rsq = v1 * v1 + v2 * v2;
         } while (rsq >= 1.0 || rsq == 0.0);
 
-
         fac = sqrt(-2.0 * log(rsq) / rsq);
-
         gset = v1 * fac;
-
         available = true;
-
         return v2 * fac;
     }
 
     available = false;
-
     return gset;
 }

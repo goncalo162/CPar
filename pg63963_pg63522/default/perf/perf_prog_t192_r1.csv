@@ -1,0 +1,17 @@
+# started on Wed Nov 11 23:43:56 2026
+
+101910.01,msec,task-clock,101910006850,100.00,26.554,CPUs utilized
+200116521348,,cycles,58695246470,56.39,1.964,GHz
+112331010981,,instructions,57623337590,55.36,0.56,insn per cycle
+3434405735,,br_pred,58205978390,55.92,33.700,M/sec
+35754940,,br_mis_pred,59253623940,56.93,0.351,M/sec
+23730021061,,L1-dcache-loads,59736978230,57.39,232.853,M/sec
+734691620,,L1-dcache-load-misses,60592444880,58.21,3.10,of all L1-dcache accesses
+15439783,,l2d_cache_refill,61420858430,59.01,0.152,M/sec
+149911943527,,fp_dp_fixed_ops_spec,62069914640,59.63,1471.023,M/sec
+0,,fp_dp_scale_ops_spec,56068426450,53.87,0.000,K/sec
+0,,fp_sp_fixed_ops_spec,55060574280,52.90,0.000,K/sec
+0,,fp_sp_scale_ops_spec,53863335900,51.75,0.000,K/sec
+0,,fp_hp_fixed_ops_spec,52773340940,50.70,0.000,K/sec
+0,,fp_hp_scale_ops_spec,51553132220,49.53,0.000,K/sec
+3837851711,ns,duration_time,3837851711,100.00,37.659,M/sec

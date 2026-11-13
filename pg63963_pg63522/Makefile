@@ -1,7 +1,7 @@
 CC = gcc
 SRC = src/
-CFLAGS  = -x c -O3 -ffast-math -fopenmp -march=native
-REPCFLAGS = -x c -O3 -ffast-math -fopenmp -g -march=native
+CFLAGS  = -x c -O3 -ffast-math -fopenmp -mcpu=a64fx
+REPCFLAGS = -x c -O3 -ffast-math -mcpu=a64fx -fopenmp -g
 LDFLAGS = -Wl,--build-id=sha1
 
 BUS_PUS ?= 0,12,24,36
@@ -11,12 +11,17 @@ PERF_EVENTS = task-clock,cycles,instructions,br_pred,br_mis_pred,L1-dcache-loads
 BUS_EVENTS = bus_read_total_mem,bus_write_total_mem
 
 .DEFAULT_GOAL = md
-.PHONY: clean cleanBenchmarks run runTest runRecord
+.PHONY: clean cleanBenchmarks run runTest runRecord svecheck runSVECheck
 
 md: $(SRC)MD.cpp
 	$(CC) $(CFLAGS) $(SRC)MD.cpp -lm $(LDFLAGS) -o md
 
+# Auto-teste dos kernels SVE contra a versão escalar (diagnóstico de NaN)
+svecheck: $(SRC)MD.cpp
+	$(CC) $(CFLAGS) -DMD_SVE_CHECK $(SRC)MD.cpp -lm $(LDFLAGS) -o md_check
+
 clean:
+	rm -f md_check
 	rm -f ./md \
 	    cp_average.txt \
 	    0_average.txt \
@@ -31,7 +36,7 @@ clean:
 
 cleanBenchmarks: clean
 	rm -rf benchmark_* \
-	       single_* \
+		   single_* \
 	       report_* \
 	       out.* \
 	       err.*
@@ -40,6 +45,9 @@ export OMP_NUM_THREADS ?= 48
 
 run: md
 	./md < inputdata.txt
+
+runSVECheck: svecheck
+	./md_check < inputdata.txt
 
 runTest:
 	@perf stat -a -C $(BUS_PUS) -e $(BUS_EVENTS) -o bus_counters.txt & \
