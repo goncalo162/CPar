@@ -217,11 +217,18 @@ Com SIMD aplicado a computeAccelerations e Potential
 
 #### uso de nova flag -msve-vector-bits=512
 
-Explicação:
+Explicação: Depois do SVE, o gargalo dos dois kernels passou a ser a divisão 1.0 / r2,
+feita uma vez por cada par (~7,5MMde pares por execução). No A64FX a
+divisão SVE (fdiv) é muito lenta e não é pipelined.
 
-Uso:
+Uso: A flag é por ficheiro e aplicada a tudo o que lá está. Aplicada ao MD.cpp
+inteiro, tornava aproximadas também as divisões do cálculo da pressão, e a
+validação falhava no P. Por isso os dois kernels passaram para `src/forces.c`
+(com `src/md.h` para as globais partilhadas), e só esse ficheiro é compilado com a
+flag (`KERNEL_FLAGS` no Makefile). O resto do programa mantém divisões exatas.
 
 Mudanças:
+`src/forces.c`: `computeAccelerations` e `Potential`, com a correção de Newton
 
 PB
 
@@ -251,3 +258,62 @@ PB
 | Sincronização OpenMP(locks/atómicos das reduções) | 2,1        |
 | Kinetic                                           | 1,8        |
 | VelocityVerlet + MeanSquaredVelocity              | 0,3        |
+
+#### Analise perf annotate
+
+Analise:Com o perf annotate ao computeAccelerations (48 threads) vimos o assembly do ciclo j
+e a % de amostras por instrução. O ciclo estava bem vetorizado
+(SVE 512 bits, registos z, desenrolado 2×, 16 pares por iteração) e já sem fdiv
+(frecpe + frecps + a nossa iteração de Newton pesam < 10%).
+Mas os acumuladores fx, fy, fz estavam na stack e não em registos: em cada iteração havia 6 ld1d e 6 st1d sobre sp + ….
+Isto cria uma dependência através da memória: o load de uma iteração espera
+pelo store da anterior (store-to-load forwarding, lento para vetores SVE de 64 B).
+
+Sugestao: ar o #pragma omp simd reduction(...) dos ciclos j dos dois kernels
+e deixar o auto-vetorizador do GCC tratar da redução
+(-O3 + -ffast-math permitem reordenar as somas), mantendo os acumuladores em registos.
+
+PB
+
+| Threads | % computeAccelerations | % Potential | #(IMM) | CPI  | Tempo (s) |
+| ------- | ---------------------- | ----------- | ------ | ---- | --------- |
+| 8       | 67,02                  | 31,51       | 40,5   | 1,13 | 2,88      |
+| 16      | 65,57                  | 30,87       | 42,1   | 1,10 | 1,47      |
+| 48      | 57,74                  | 27,47       | 48,9   | 1,08 | 0,575     |
+| 96      | 67,29                  | 31,72       | 41,2   | 1,24 | 1,14      |
+| 128     | 68,79                  | 29,83       | 41,9   | 1,27 | 1,40      |
+| 144     | 69,36                  | 29,15       | 42,2   | 1,28 | 1,43      |
+
+Novos Resultados
+
+| Threads | % computeAcc | % Potential | #(IMM) | CPI  | Tempo (s) |
+| ------- | ------------ | ----------- | ------ | ---- | --------- |
+| 8       | 70,18        | 28,86       | 29,2   | 1,22 | 2,25      |
+| 16      | 68,39        | 28,37       | 30,5   | 1,19 | 1,16      |
+| 48      | 59,49        | 24,30       | 36,2   | 1,17 | 0,490     |
+| 96      | 69,66        | 28,84       | 30,6   | 1,36 | 1,04      |
+| 128     | 70,98        | 27,33       | 31,3   | 1,38 | 1,28      |
+| 144     | 70,37        | 27,44       | 31,7   | 1,40 | 1,30      |
+
+#### Sincronização OpenMP
+
+| Parte                                              | % do tempo |
+| -------------------------------------------------- | ---------- |
+| computeAccelerations                               | 59,5       |
+| Potential                                          | 24,3       |
+| Sincronização OpenMP (barreiras)                   | 10,9       |
+| Sincronização OpenMP (locks/atómicos das reduções) | 2,7        |
+| Kinetic                                            | 2,1        |
+| VelocityVerlet + MeanSquaredVelocity               | 0,3        |
+| Gestão de threads (team_start, thread_start, …)    | 0,2        |
+| Resto (parte em série, I/O)                        | ~0         |
+
+| Região                         | T1 (s)  | TN (s) | % de TN | Speedup | Efic. | Perda (s) |
+| ------------------------------ | ------- | ------ | ------- | ------- | ----- | --------- |
+| VelocityVerlet (2 ciclos O(N)) | 0.0104  | 0.0107 | 2.5%    | 1.0x    | 2%    | 0.0105    |
+| computeAccelerations           | 12.3909 | 0.2691 | 61.4%   | 46.0x   | 96%   | 0.0110    |
+| MeanSquaredVelocity            | 0.0014  | 0.0198 | 4.5%    | 0.1x    | 0%    | 0.0198    |
+| Kinetic                        | 0.0013  | 0.0181 | 4.1%    | 0.1x    | 0%    | 0.0181    |
+| Potential                      | 5.1496  | 0.1178 | 26.9%   | 43.7x   | 91%   | 0.0105    |
+| Resto (série, I/O)             | 0.0032  | 0.0025 | 0.6%    | 1.3x    | 3%    | 0.0024    |
+| TOTAL (ciclo principal)        | 17.5568 | 0.4380 | 100.0%  | 40.1x   | 84%   | 0.0722    |

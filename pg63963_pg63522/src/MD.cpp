@@ -11,6 +11,11 @@
 
 #include "md.h"
 
+/* Soma de v^2 de todas as partículas no fim do último VelocityVerlet(); usada pelo
+   MeanSquaredVelocity() e pelo Kinetic() (que calculavam a mesma soma em 2 regiões
+   paralelas à parte). */
+static double V2_atual = 0.0;
+
 /* definição das variáveis globais (declaradas como extern em md.h) */
 int N;
 double sigma = 1.0, epsilon = 1.0, m = 1.0, kB = 1.0;
@@ -255,28 +260,12 @@ void initialize(void)
 
 double MeanSquaredVelocity(void)
 {
-    double sx = 0.0, sy = 0.0, sz = 0.0;
-
-#pragma omp parallel for reduction(+ : sx, sy, sz) schedule(static)
-    for (int i = 0; i < N; i++)
-    {
-        sx += vx[i] * vx[i];
-        sy += vy[i] * vy[i];
-        sz += vz[i] * vz[i];
-    }
-    return (sx + sy + sz) / N;
+    return V2_atual / N;
 }
 
 double Kinetic(void)
 {
-    double kin = 0.0;
-
-#pragma omp parallel for reduction(+ : kin) schedule(static)
-    for (int i = 0; i < N; i++)
-    {
-        kin += 0.5 * m * (vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]);
-    }
-    return kin;
+    return 0.5 * m * V2_atual;
 }
 
 double VelocityVerlet(double dt, int iter, FILE *fp)
@@ -284,7 +273,7 @@ double VelocityVerlet(double dt, int iter, FILE *fp)
     (void)iter;
     (void)fp;
 
-    double psum = 0.0;
+    double psum = 0.0, v2sum = 0.0;
     const double half_dt = 0.5 * dt;
     const double half_dt2 = 0.5 * dt * dt;
 
@@ -304,7 +293,7 @@ double VelocityVerlet(double dt, int iter, FILE *fp)
     computeAccelerations();
 
 /* Segunda metade do passo + pressão nas paredes. */
-#pragma omp parallel for schedule(static) reduction(+ : psum)
+#pragma omp parallel for schedule(static) reduction(+ : psum, v2sum)
     for (int i = 0; i < N; i++)
     {
         vx[i] += ax[i] * half_dt;
@@ -343,8 +332,12 @@ double VelocityVerlet(double dt, int iter, FILE *fp)
             vz[i] = -vz[i];
             psum += 2.0 * m * fabs(vz[i]) / dt;
         }
+
+        /* depois dos ressaltos (o sinal de v não muda v^2) */
+        v2sum += vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i];
     }
 
+    V2_atual = v2sum;
     return psum / (6.0 * L * L);
 }
 
