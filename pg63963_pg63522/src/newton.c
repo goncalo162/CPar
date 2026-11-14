@@ -4,9 +4,14 @@
 /* Energia potencial das posições do último computeAccelerations(). */
 static double PE_atual = 0.0;
 
-/* Tamanho do bloco de j: os temporários (2 x BLK doubles = 8 KB) ficam na L1 (64 KB). */
+/* Temporarios: 4 x BLK doubles (16 KiB se BLK=512). Fazer sweep de BLK. */
 #ifndef BLK
 #define BLK 512
+#endif
+
+/* Tiling opcional da reducao para vectorizar ao longo de j. */
+#ifndef RED_BLK
+#define RED_BLK 32
 #endif
 
 #define MAX_THREADS_F 192
@@ -14,9 +19,11 @@ static double pot_parcial[MAX_THREADS_F][32] __attribute__((aligned(256)));
 
 /* 3.ª lei de Newton: forças parciais de cada thread (-f dos j). Ficam a 0 entre
    passos: a redução no fim lê e volta a pôr a 0. */
-static double fpx[MAX_THREADS_F][MAXPART] __attribute__((aligned(256)));
-static double fpy[MAX_THREADS_F][MAXPART] __attribute__((aligned(256)));
-static double fpz[MAX_THREADS_F][MAXPART] __attribute__((aligned(256)));
+#define MAXPAD ((MAXPART + 31) & ~31) /* linhas de 256 B */
+static struct
+{
+    double x[MAXPAD], y[MAXPAD], z[MAXPAD];
+} fp[MAX_THREADS_F] __attribute__((aligned(256)));
 
 void computeAccelerations(void)
 {
@@ -27,16 +34,32 @@ void computeAccelerations(void)
     {
         double pot_t = 0.0; /* soma local desta thread */
         const int t = omp_get_thread_num();
-        double *const gx = fpx[t], *const gy = fpy[t], *const gz = fpz[t];
+        double *const gx = fp[t].x, *const gy = fp[t].y, *const gz = fp[t].z;
+        for (int j = 0; j < N; j++)
+        {
+            gx[j] = 0.0;
+            gy[j] = 0.0;
+            gz[j] = 0.0;
+        }
 
         struct
         {
             double r2a[BLK], r2b[BLK], inva[BLK], invb[BLK];
-        } tmp __attribute__((aligned(16384)));
+        } tmp __attribute__((aligned(256)));
         double *const r2a = tmp.r2a, *const r2b = tmp.r2b;
         double *const inva = tmp.inva, *const invb = tmp.invb;
 
-#pragma omp for schedule(dynamic, 24)
+/* Compilar -DNEWTON_STATIC1 para ensaiar escalonamento ciclico;
+           baseline dynamic,6 mantido para comparacao. */
+#if defined(NEWTON_STATIC1)
+#pragma omp for schedule(static, 1)
+#elif defined(NEWTON_DYNAMIC3)
+#pragma omp for schedule(dynamic, 3)
+#elif defined(NEWTON_GUIDED1)
+#pragma omp for schedule(guided, 1)
+#else
+#pragma omp for schedule(dynamic, 6)
+#endif
         for (int i = 0; i < N; i += 2)
         {
             const int tem_b = (i + 1 < N); /* N ímpar: a última iteração só tem i */
@@ -47,7 +70,7 @@ void computeAccelerations(void)
             double fxa = 0.0, fya = 0.0, fza = 0.0, ua = 0.0;
             double fxb = 0.0, fyb = 0.0, fzb = 0.0, ub = 0.0;
 
-            for (int j0 = i + 1; j0 < N; j0 += BLK) /* Newton: só j > i */
+            for (int j0 = (i + 1) & ~7; j0 < N; j0 += BLK) /* j > i, j0 alinhado a 8 */
             {
                 const int n = (N - j0 < BLK) ? N - j0 : BLK;
 
@@ -95,11 +118,18 @@ void computeAccelerations(void)
                         svst1(p1, invb + k + vl, pb1);
                     }
                 }
-                /* o 1.º j é i+1 = ib: para b é o próprio (r2 = 0) */
-                if (j0 == i + 1)
-                    invb[0] = 0.0;
+                /* 1.º bloco: j <= i (para a) e j <= ib (para b) não são pares: força 0 */
+                for (int k = 0; j0 + k <= ib && k < n; k++)
+                {
+                    invb[k] = 0.0;
+                    if (j0 + k <= i)
+                        inva[k] = 0.0;
+                }
 
-                /* fase 3 */
+                /* fase 3: testar -DNEWTON_FORCE_SIMD caso compiler nao vectorize. */
+#if defined(NEWTON_FORCE_SIMD)
+#pragma omp simd reduction(+:fxa,fya,fza,ua,fxb,fyb,fzb,ub)
+#endif
                 for (int k = 0; k < n; k++)
                 {
                     const double xj = rx[j0 + k], yj = ry[j0 + k], zj = rz[j0 + k];
@@ -148,25 +178,52 @@ void computeAccelerations(void)
         if (t == 0)
             nthreads = omp_get_num_threads();
 
-        /* redução: a[j] = 24 * soma das threads; repõe os privados a 0 */
+        /* Reducao: a[j] = 24 * soma das threads. Os privados sao limpos no inicio do proximo passo. */
         const int nt = omp_get_num_threads();
+#if defined(NEWTON_LEGACY_REDUCTION)
 #pragma omp for schedule(static)
         for (int j = 0; j < N; j++)
         {
             double sx = 0.0, sy = 0.0, sz = 0.0;
             for (int s = 0; s < nt; s++)
             {
-                sx += fpx[s][j];
-                sy += fpy[s][j];
-                sz += fpz[s][j];
-                fpx[s][j] = 0.0;
-                fpy[s][j] = 0.0;
-                fpz[s][j] = 0.0;
+                sx += fp[s].x[j];
+                sy += fp[s].y[j];
+                sz += fp[s].z[j];
             }
             ax[j] = 24.0 * sx;
             ay[j] = 24.0 * sy;
             az[j] = 24.0 * sz;
         }
+#else
+        /* Ao contrario de 'for j -> for s', vectoriza sobre indices j contiguos.
+           O somatorio por cada j continua na mesma ordem de threads s. */
+#pragma omp for schedule(static)
+        for (int j0 = 0; j0 < N; j0 += RED_BLK)
+        {
+            const int n = (N - j0 < RED_BLK) ? N - j0 : RED_BLK;
+            double sx[RED_BLK] = {0.0};
+            double sy[RED_BLK] = {0.0};
+            double sz[RED_BLK] = {0.0};
+            for (int s = 0; s < nt; s++)
+            {
+#pragma omp simd
+                for (int k = 0; k < n; k++)
+                {
+                    sx[k] += fp[s].x[j0 + k];
+                    sy[k] += fp[s].y[j0 + k];
+                    sz[k] += fp[s].z[j0 + k];
+                }
+            }
+#pragma omp simd
+            for (int k = 0; k < n; k++)
+            {
+                ax[j0 + k] = 24.0 * sx[k];
+                ay[j0 + k] = 24.0 * sy[k];
+                az[j0 + k] = 24.0 * sz[k];
+            }
+        }
+#endif
     } /* fim do parallel = barreira */
 
     for (int t = 0; t < nthreads; t++)

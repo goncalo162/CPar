@@ -4,19 +4,18 @@
 # Uso (no Mac):
 #   ./recolhe.sh                 # threads por defeito
 #   ./recolhe.sh 8 16 48 96      # só estas
-#   NRUNS=5 ./recolhe.sh 48      # outro nº de runs do perf stat (por defeito 10)
 #
 # Resultado: resultados/<data_hora>.txt  (no Mac)
 #
 # Para cada nº de threads:
 #   RUN 1 - perf stat x NRUNS (10): média, melhor, pior, mediana + contadores da run mediana
-#   RUN 2 - perf record: % do tempo por função (amostragem, tem overhead)
+#   RUN 2 - perf record: % do tempo por função (amostragem, tem overhead)      -> usar para %
 #
-# Usa o src/ e o Makefile que estão NO CLUSTER: envia antes as tuas alterações
-# (scripts/upload_files.sh src/MD.cpp src/forces.c Makefile).
+# Usa o src/MD.cpp e o Makefile que estão NO CLUSTER: envia antes as tuas alterações
+# (scripts/upload_files.sh src/MD.cpp Makefile).
 
 THREADS="${*:-1 8 16 32 48 64 96 128 144 192}"
-NRUNS="${NRUNS:-10}"
+NRUNS="${NRUNS:-10}"   # nº de runs do perf stat por nº de threads (NRUNS=5 ./recolhe.sh 48)
 
 REMOTE=deucalion
 DIR=/projects/F202500010HPCVLABUMINHO/2026-2027cp/mei.2026.pg63522
@@ -37,9 +36,8 @@ echo "data:      $(date)"
 echo "nó:        $(hostname)"
 echo "gcc:       $(gcc --version | head -1)"
 echo "threads:   $THREADS"
-echo "runs:      $NRUNS"
 echo "schedule:  ${OMP_SCHEDULE:-(o que está no código)}"
-echo "md5 src:   $(md5sum src/MD.cpp src/forces.c 2>/dev/null | tr '\n' ' ')"
+echo "md5 src:   $(md5sum src/MD.cpp src/*.c 2>/dev/null | tr '\n' ' ')"
 echo "CFLAGS:    $(grep '^CFLAGS' Makefile)"
 echo "KERNEL:    $(grep '^KERNEL_FLAGS' Makefile)"
 
@@ -49,9 +47,12 @@ make -s clean >/dev/null 2>&1; make -s md || exit 1
 CF=$(sed -n 's/^CFLAGS *= *//p' Makefile)
 KF=$(sed -n 's/^KERNEL_FLAGS *= *//p' Makefile)
 PF="-g -fno-inline -fno-omit-frame-pointer"
-if [ -f src/forces.c ]; then
+KFILE=$(for f in src/*.c; do b=$(basename "$f" .c); grep -qE "\b$b\.(c|o)\b" Makefile && echo "$f"; done | head -1)
+if [ -n "$KFILE" ]; then
+  # kernels no ficheiro que o Makefile compila (forces.c, newton.c, ...), com KERNEL_FLAGS
+  echo "kernel:    $KFILE"
   gcc $CF $PF -x c -c src/MD.cpp -o prof_MD.o || exit 1
-  gcc $CF $KF $PF -c src/forces.c -o prof_forces.o || exit 1
+  gcc $CF $KF $PF -c "$KFILE" -o prof_forces.o || exit 1
   gcc $CF prof_MD.o prof_forces.o -lm -o md_prof || exit 1
   rm -f prof_MD.o prof_forces.o
 else
@@ -83,12 +84,11 @@ for T in $THREADS; do
   echo "--- contadores da run mediana (run $MED):"
   cat stat_$MED.tmp
   rm -f stat_*.tmp tempos.tmp med_id.tmp
-
   echo "======== RUN 2: perf record + report (% por função)"
   perf record -e cycles:u -F 1000 -o rec.data ./md_prof < inputdata.txt > /dev/null 2>&1
   perf report -i rec.data --stdio --no-children --sort dso,sym 2>/dev/null | grep -v '^#' | grep -v '^$'
 done
-rm -f rec.data rec.data.old md_prof
+rm -f stat.tmp rec.data rec.data.old md_prof
 echo
 echo "################ FIM"
 REMOTO
