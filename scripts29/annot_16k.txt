@@ -1,0 +1,343 @@
+ Percent |	Source code & Disassembly of md for cycles (42242 samples, percent: local period)
+-------------------------------------------------------------------------------------------------
+         :
+         :
+         :
+         :            Disassembly of section .text:
+         :
+         :            0000000000401f60 <computeAccelerations._omp_fn.0>:
+         :            computeAccelerations._omp_fn.0():
+         :            void computeAccelerations(void)
+         :            {
+         :            double pot = 0.0;
+         :            int nthreads = 1;
+         :
+         :            #pragma omp parallel
+    0.00 :   401f60: mov     x12, #0x6030                    // #24624
+    0.00 :   401f64: sub     sp, sp, x12
+    0.00 :   401f68: stp     x29, x30, [sp]
+    0.00 :   401f6c: mov     x29, sp
+    0.00 :   401f70: stp     x23, x24, [sp, #48]
+    0.00 :   401f74: mov     x24, x0
+         :            } tmp __attribute__((aligned(16384)));
+         :            double *const r2v = tmp.r2v;
+         :            double *const inv2v = tmp.inv2v;
+         :            double pot_t = 0.0;
+         :
+         :            #pragma omp for schedule(static) nowait
+    0.00 :   401f78: adrp    x0, 420000 <perror@GLIBC_2.17>
+         :            #pragma omp parallel
+    0.00 :   401f7c: stp     x19, x20, [sp, #16]
+         :            #pragma omp for schedule(static) nowait
+    0.00 :   401f80: ldr     w20, [x0, #512]
+         :            #pragma omp parallel
+    0.00 :   401f84: stp     x21, x22, [sp, #32]
+    0.00 :   401f88: bl      400af0 <omp_get_num_threads@plt>
+    0.00 :   401f8c: mov     w21, w0
+    0.00 :   401f90: bl      400a90 <omp_get_thread_num@plt>
+    0.00 :   401f94: sdiv    w18, w20, w21
+    0.00 :   401f98: msub    w1, w18, w21, w20
+         :            #pragma omp for schedule(static) nowait
+    0.00 :   401f9c: cmp     w0, w1
+    0.00 :   401fa0: cinc    w18, w18, lt    // lt = tstop
+    0.00 :   401fa4: csel    w1, w1, wzr, ge // ge = tcont
+    0.00 :   401fa8: madd    w1, w18, w0, w1
+    0.00 :   401fac: add     w18, w18, w1
+    0.00 :   401fb0: cmp     w1, w18
+    0.00 :   401fb4: b.ge    4022b4 <computeAccelerations._omp_fn.0+0x354>  // b.tcont
+    0.00 :   401fb8: sxtw    x14, w1
+         :            const double zi = rz[i];
+         :            double fx = 0.0, fy = 0.0, fz = 0.0, ui = 0.0;
+         :
+         :            /* cadeia longa de dependências partida em 3 ciclos curtos por bloco de j:
+         :            o CPU consegue ter muitas iterações independentes em execução (esconde a latência) */
+         :            for (int j0 = 0; j0 < N; j0 += BLK)
+    0.00 :   401fbc: cmp     w20, #0x0
+    0.00 :   401fc0: b.le    40224c <computeAccelerations._omp_fn.0+0x2ec>
+    0.00 :   401fc4: mov     x1, #0x403f                     // #16447
+    0.00 :   401fc8: sub     w11, w20, #0x200
+    0.00 :   401fcc: add     x19, sp, x1
+    0.00 :   401fd0: adrp    x23, 43f000 <ay+0x90b0>
+    0.00 :   401fd4: and     x19, x19, #0xffffffffffffc000
+    0.00 :   401fd8: adrp    x22, 435000 <az+0x8d00>
+    0.00 :   401fdc: adrp    x30, 42c000 <parciais+0xbd00>
+    0.00 :   401fe0: sub     w1, w20, #0x1
+    0.00 :   401fe4: adrp    x17, 47a000 <ry+0x96d0>
+    0.00 :   401fe8: and     w1, w1, #0xfffffe00
+    0.00 :   401fec: adrp    x16, 470000 <rz+0x9320>
+    0.00 :   401ff0: adrp    x15, 466000 <vx+0x8f70>
+    0.00 :   401ff4: sub     w11, w11, w1
+    0.00 :   401ff8: add     x23, x23, #0xba0
+    0.00 :   401ffc: add     x22, x22, #0xf50
+    0.00 :   402000: add     x30, x30, #0x300
+    0.00 :   402004: add     x17, x17, #0x580
+    0.00 :   402008: add     x16, x16, #0x930
+    0.00 :   40200c: movi    d31, #0x0
+    0.00 :   402010: add     x15, x15, #0xce0
+         :            {
+         :            const int n = (N - j0 < BLK) ? N - j0 : BLK;
+    0.00 :   402014: mov     w12, #0x200                     // #512
+         :
+         :            /* fase 1: distância ao quadrado */
+         :            for (int k = 0; k < n; k++)
+         :            {
+         :            const double dx = xi - rx[j0 + k];
+    0.00 :   402018: ptrue   p7.b, vl64
+    0.00 :   40201c: add     x9, x19, #0xfc0
+         :            /* fase 2: 1/r2 aproximado + 1 iteração de Newton; j == i -> 0 */
+         :            for (int k = 0; k < n; k++)
+         :            {
+         :            const double r2 = r2v[k];
+         :            const double inv0 = 1.0 / r2;
+         :            inv2v[k] = (r2 > 0.0) ? inv0 * (2.0 - r2 * inv0) : 0.0;
+    0.00 :   402020: fmov    z28.d, #2.000000000000000000e+00
+    0.00 :   402024: add     x8, x19, #0x1, lsl #12
+         :            const double dois_inv2 = inv2 + inv2;
+         :            const double inv4 = inv2 * inv2;
+         :            const double inv6 = inv4 * inv2;
+         :            const double inv8 = inv4 * inv4;
+         :            const double s = dois_inv2 * inv4 - 1.0;
+         :            const double f = inv8 * s;
+    0.00 :   402028: fmov    z29.d, #-1.000000000000000000e+00
+         :            fy += dy * f;
+         :            fz += dz * f;
+         :            }
+         :            }
+         :
+         :            ax[i] = 24.0 * fx;
+    0.00 :   40202c: fmov    d30, #2.400000000000000000e+01
+    0.00 :   402030: nop
+    0.00 :   402034: nop
+    0.00 :   402038: nop
+    0.00 :   40203c: nop
+         :            const double xi = rx[i];
+    0.00 :   402040: lsl     x13, x14, #3
+    0.00 :   402044: add     x1, x17, x13
+    0.00 :   402048: ptrue   p6.b, vl64
+         :            double fx = 0.0, fy = 0.0, fz = 0.0, ui = 0.0;
+    0.00 :   40204c: movi    d27, #0x0
+         :            const double yi = ry[i];
+    0.00 :   402050: add     x2, x16, x13
+    0.00 :   402054: ld1rd   {z18.d}, p6/z, [x1]
+    0.03 :   402058: ld1rd   {z19.d}, p6/z, [x2]
+         :            const double zi = rz[i];
+    0.01 :   40205c: add     x1, x15, x13
+         :            double fx = 0.0, fy = 0.0, fz = 0.0, ui = 0.0;
+    0.02 :   402060: fmov    d26, d27
+    0.00 :   402064: ld1rd   {z20.d}, p6/z, [x1]
+    0.00 :   402068: fmov    d25, d27
+    0.00 :   40206c: fmov    d24, d27
+    0.01 :   402070: mov     w10, w20
+    0.00 :   402074: mov     x7, x15
+    0.00 :   402078: mov     x6, x16
+    0.00 :   40207c: mov     x5, x17
+         :            for (int k = 0; k < n; k++)
+    0.04 :   402080: cmp     w10, #0x0
+    0.00 :   402084: b.le    4021d8 <computeAccelerations._omp_fn.0+0x278>
+         :            const int n = (N - j0 < BLK) ? N - j0 : BLK;
+    0.00 :   402088: cmp     w10, #0x200
+    0.00 :   40208c: mov     x4, x19
+    0.04 :   402090: csel    w2, w10, w12, le
+    0.00 :   402094: mov     x3, x19
+    0.00 :   402098: mov     x1, #0x0                        // #0
+    0.00 :   40209c: whilelo p6.d, wzr, w2
+    0.05 :   4020a0: mov     p5.b, p6.b
+    0.00 :   4020a4: nop
+    0.00 :   4020a8: nop
+    0.00 :   4020ac: nop
+    0.05 :   4020b0: nop
+    0.00 :   4020b4: nop
+    0.00 :   4020b8: nop
+    0.00 :   4020bc: nop
+         :            const double dy = yi - ry[j0 + k];
+    3.11 :   4020c0: ld1d    {z16.d}, p5/z, [x6, x1, lsl #3]
+         :            const double dx = xi - rx[j0 + k];
+    0.06 :   4020c4: ld1d    {z17.d}, p5/z, [x5, x1, lsl #3]
+         :            const double dz = zi - rz[j0 + k];
+    0.25 :   4020c8: ld1d    {z7.d}, p5/z, [x7, x1, lsl #3]
+         :            const double dy = yi - ry[j0 + k];
+    0.03 :   4020cc: fsub    z16.d, z19.d, z16.d
+         :            const double dx = xi - rx[j0 + k];
+    4.25 :   4020d0: fsub    z17.d, z18.d, z17.d
+         :            r2v[k] = dx * dx + dy * dy + dz * dz;
+    0.05 :   4020d4: fmul    z16.d, z16.d, z16.d
+         :            const double dz = zi - rz[j0 + k];
+    0.33 :   4020d8: fsub    z7.d, z20.d, z7.d
+         :            r2v[k] = dx * dx + dy * dy + dz * dz;
+    1.59 :   4020dc: fmla    z16.d, p7/m, z17.d, z17.d
+    9.55 :   4020e0: fmad    z7.d, p7/m, z7.d, z16.d
+    0.00 :   4020e4: st1d    {z7.d}, p5, [x3]
+         :            for (int k = 0; k < n; k++)
+    0.00 :   4020e8: add     x1, x1, #0x8
+    0.00 :   4020ec: add     x3, x3, #0x40
+    6.87 :   4020f0: whilelo p5.d, w1, w2
+    0.00 :   4020f4: b.ne    4020c0 <computeAccelerations._omp_fn.0+0x160>  // b.any
+    0.10 :   4020f8: mov     p5.b, p6.b
+    0.00 :   4020fc: mov     x1, #0x8                        // #8
+         :            const double r2 = r2v[k];
+    3.36 :   402100: ld1d    {z1.d}, p5/z, [x4]
+         :            const double inv0 = 1.0 / r2;
+    0.27 :   402104: frecpe  z5.d, z1.d
+    0.27 :   402108: frecps  z0.d, z5.d, z1.d
+         :            inv2v[k] = (r2 > 0.0) ? inv0 * (2.0 - r2 * inv0) : 0.0;
+    0.00 :   40210c: fcmgt   p4.d, p7/z, z1.d, #0.0
+         :            const double inv0 = 1.0 / r2;
+    3.34 :   402110: fmul    z5.d, z5.d, z0.d
+         :            inv2v[k] = (r2 > 0.0) ? inv0 * (2.0 - r2 * inv0) : 0.0;
+    0.00 :   402114: add     x3, x9, x1, lsl #3
+    0.00 :   402118: add     x4, x4, #0x40
+         :            const double inv0 = 1.0 / r2;
+    0.34 :   40211c: frecps  z0.d, z5.d, z1.d
+    3.41 :   402120: fmul    z0.d, z5.d, z0.d
+         :            inv2v[k] = (r2 > 0.0) ? inv0 * (2.0 - r2 * inv0) : 0.0;
+    1.24 :   402124: fmsb    z1.d, p7/m, z0.d, z28.d
+   11.09 :   402128: movprfx z1.d, p4/z, z1.d
+    0.00 :   40212c: fmul    z1.d, p4/m, z1.d, z0.d
+    0.00 :   402130: st1d    {z1.d}, p5, [x3]
+         :            for (int k = 0; k < n; k++)
+   10.27 :   402134: whilelo p5.d, w1, w2
+    0.00 :   402138: add     x1, x1, #0x8
+    0.00 :   40213c: b.ne    402100 <computeAccelerations._omp_fn.0+0x1a0>  // b.any
+    0.13 :   402140: movi    d3, #0x0
+    0.01 :   402144: mov     x1, #0x0                        // #0
+    0.51 :   402148: mov     z2.d, z3.d
+    0.00 :   40214c: mov     z23.d, z3.d
+    0.02 :   402150: mov     z22.d, z3.d
+    0.02 :   402154: nop
+    0.00 :   402158: nop
+    0.00 :   40215c: nop
+         :            const double inv2 = inv2v[k];
+    3.04 :   402160: ld1d    {z7.d}, p6/z, [x8, x1, lsl #3]
+         :            const double dx = xi - rx[j0 + k];
+    0.02 :   402164: ld1d    {z21.d}, p6/z, [x5, x1, lsl #3]
+         :            const double inv4 = inv2 * inv2;
+    0.13 :   402168: fmul    z5.d, z7.d, z7.d
+         :            const double dy = yi - ry[j0 + k];
+    0.00 :   40216c: ld1d    {z17.d}, p6/z, [x6, x1, lsl #3]
+         :            const double dz = zi - rz[j0 + k];
+    2.98 :   402170: ld1d    {z16.d}, p6/z, [x7, x1, lsl #3]
+         :            const double f = inv8 * s;
+    0.15 :   402174: fmul    z4.d, z5.d, z5.d
+         :            const double dois_inv2 = inv2 + inv2;
+    0.00 :   402178: fadd    z0.d, z7.d, z7.d
+         :            const double dx = xi - rx[j0 + k];
+    0.00 :   40217c: fsub    z21.d, z18.d, z21.d
+         :            const double f = inv8 * s;
+    3.06 :   402180: fmad    z0.d, p7/m, z5.d, z29.d
+         :            const double dy = yi - ry[j0 + k];
+    0.02 :   402184: fsub    z17.d, z19.d, z17.d
+         :            const double f = inv8 * s;
+    0.18 :   402188: fmul    z0.d, z0.d, z4.d
+         :            const double inv6 = inv4 * inv2;
+    0.00 :   40218c: fmul    z5.d, z5.d, z7.d
+         :            fx += dx * f;
+   11.50 :   402190: fmla    z3.d, p6/m, z21.d, z0.d
+         :            const double dz = zi - rz[j0 + k];
+    0.03 :   402194: fsub    z16.d, z20.d, z16.d
+         :            fy += dy * f;
+    6.21 :   402198: fmla    z2.d, p6/m, z17.d, z0.d
+         :            fz += dz * f;
+    1.79 :   40219c: fmla    z23.d, p6/m, z0.d, z16.d
+         :            for (int k = 0; k < n; k++)
+    2.97 :   4021a0: add     x1, x1, #0x8
+         :            ui += inv6 * (inv6 - 1.0);
+    0.02 :   4021a4: movprfx z6, z5
+    0.00 :   4021a8: fsub    z6.d, p7/m, z6.d, #1.0
+    0.01 :   4021ac: fmla    z22.d, p6/m, z6.d, z5.d
+         :            for (int k = 0; k < n; k++)
+    0.00 :   4021b0: whilelo p6.d, w1, w2
+    2.86 :   4021b4: b.ne    402160 <computeAccelerations._omp_fn.0+0x200>  // b.any
+    0.13 :   4021b8: faddv   d3, p7, z3.d
+    2.61 :   4021bc: faddv   d2, p7, z2.d
+    0.35 :   4021c0: faddv   d23, p7, z23.d
+    0.36 :   4021c4: faddv   d22, p7, z22.d
+    0.52 :   4021c8: fadd    d24, d24, d3
+    0.00 :   4021cc: fadd    d25, d25, d2
+    0.03 :   4021d0: fadd    d26, d26, d23
+    0.10 :   4021d4: fadd    d27, d27, d22
+         :            for (int j0 = 0; j0 < N; j0 += BLK)
+    0.00 :   4021d8: sub     w10, w10, #0x200
+    0.00 :   4021dc: add     x7, x7, #0x1, lsl #12
+    0.09 :   4021e0: add     x6, x6, #0x1, lsl #12
+    0.03 :   4021e4: add     x5, x5, #0x1, lsl #12
+    0.00 :   4021e8: cmp     w10, w11
+    0.00 :   4021ec: b.ne    402080 <computeAccelerations._omp_fn.0+0x120>  // b.any
+         :            ax[i] = 24.0 * fx;
+    0.00 :   4021f0: fmul    d23, d24, d30
+         :            ay[i] = 24.0 * fy;
+    0.00 :   4021f4: fmul    d22, d25, d30
+         :            az[i] = 24.0 * fz;
+    0.01 :   4021f8: fmul    d21, d26, d30
+         :            ax[i] = 24.0 * fx;
+    0.00 :   4021fc: str     d23, [x23, x13]
+         :            ay[i] = 24.0 * fy;
+    0.00 :   402200: str     d22, [x22, x13]
+         :            az[i] = 24.0 * fz;
+    0.00 :   402204: str     d21, [x30, x13]
+         :            pot_t += ui;
+    0.02 :   402208: fadd    d31, d31, d27
+    0.00 :   40220c: add     x14, x14, #0x1
+    0.01 :   402210: cmp     w18, w14
+    0.00 :   402214: b.gt    402040 <computeAccelerations._omp_fn.0+0xe0>
+         :            }
+         :            const int t = omp_get_thread_num();
+         :            pot_parcial[t][0] = pot_t;
+    0.00 :   402218: adrp    x1, 484000 <rx+0x9a80>
+    0.00 :   40221c: sbfiz   x2, x0, #8, #32
+    0.00 :   402220: add     x1, x1, #0x300
+    0.00 :   402224: str     d31, [x1, x2]
+         :            if (t == 0)
+    0.00 :   402228: cbnz    w0, 402230 <computeAccelerations._omp_fn.0+0x2d0>
+         :            nthreads = omp_get_num_threads();
+    0.00 :   40222c: str     w21, [x24]
+         :            #pragma omp parallel
+    0.00 :   402230: ldp     x29, x30, [sp]
+    0.00 :   402234: ldp     x19, x20, [sp, #16]
+    0.00 :   402238: ldp     x21, x22, [sp, #32]
+    0.00 :   40223c: ldp     x23, x24, [sp, #48]
+    0.00 :   402240: mov     x12, #0x6030                    // #24624
+    0.00 :   402244: add     sp, sp, x12
+    0.00 :   402248: ret
+    0.00 :   40224c: adrp    x23, 43f000 <ay+0x90b0>
+    0.00 :   402250: adrp    x22, 435000 <az+0x8d00>
+    0.00 :   402254: adrp    x30, 42c000 <parciais+0xbd00>
+    0.00 :   402258: add     x23, x23, #0xba0
+    0.00 :   40225c: add     x22, x22, #0xf50
+    0.00 :   402260: add     x30, x30, #0x300
+         :            ax[i] = 24.0 * fx;
+    0.00 :   402264: lsl     x1, x14, #3
+    0.00 :   402268: add     x3, x23, x1
+         :            ay[i] = 24.0 * fy;
+    0.00 :   40226c: add     x2, x22, x1
+         :            az[i] = 24.0 * fz;
+    0.00 :   402270: add     x1, x30, x1
+         :            ax[i] = 24.0 * fx;
+    0.00 :   402274: str     xzr, [x3]
+         :            ay[i] = 24.0 * fy;
+    0.00 :   402278: str     xzr, [x2]
+         :            az[i] = 24.0 * fz;
+    0.00 :   40227c: str     xzr, [x1]
+         :            pot_t += ui;
+    0.00 :   402280: add     x2, x14, #0x1
+         :            ax[i] = 24.0 * fx;
+    0.00 :   402284: lsl     x1, x2, #3
+    0.00 :   402288: add     x4, x23, x1
+         :            ay[i] = 24.0 * fy;
+    0.00 :   40228c: add     x3, x22, x1
+         :            az[i] = 24.0 * fz;
+    0.00 :   402290: add     x1, x30, x1
+    0.00 :   402294: cmp     w18, w2
+    0.00 :   402298: b.le    4022b4 <computeAccelerations._omp_fn.0+0x354>
+         :            ax[i] = 24.0 * fx;
+    0.00 :   40229c: str     xzr, [x4]
+         :            ay[i] = 24.0 * fy;
+    0.00 :   4022a0: str     xzr, [x3]
+         :            az[i] = 24.0 * fz;
+    0.00 :   4022a4: str     xzr, [x1]
+         :            pot_t += ui;
+    0.00 :   4022a8: add     x14, x14, #0x2
+    0.00 :   4022ac: cmp     w18, w14
+    0.00 :   4022b0: b.gt    402264 <computeAccelerations._omp_fn.0+0x304>
+         :            double pot_t = 0.0;
+    0.00 :   4022b4: movi    d31, #0x0
+    0.00 :   4022b8: b       402218 <computeAccelerations._omp_fn.0+0x2b8>

@@ -84,3 +84,54 @@ Executam-se mais 39% de instruções (loads/stores dos temporários e overhead d
 As L1 loads quase triplicam sem aumento de misses, porque os temporários vivem na L1.
 Foi escolhido uso de blocos com 512 pois ocupa 20 KB dos 64 KB da L1. Ganhos de subir não sao estavaies devido ao uso da L1.
 Com o kernel mais rápido, a sincronização ganha peso (barreiras de ~7% para 11.3% do tempo), como prevê a lei de Amdahl.
+
+# VelocityVerlet reduction
+
+## Problema encontrado
+
+Depois de otimizar o kernel das forças, o perf passou a mostrar que uma fatia grande do tempo já não era cálculo: 11.1% em barreiras
+(`gomp_team_barrier_wait_end`, `gomp_barrier_wait_end`) e 3.8% em locks/atómicos. Instrumentámos cada região paralela com `omp_get_wtime()`
+e encontrámos a maior espera no 2.º ciclo do VelocityVerlet: 17.6 ms, 6.5% do ciclo principal. É mais do que no próprio computeAccelerations(3.6%).
+
+A causa estava no `reduction(+ : psum, v2sum)`. Com uma só variável, o GCC combina a redução com uma instrução atómica (`cas`).
+Protege a combinação final com um mutex global (`GOMP_atomic_start`/`GOMP_atomic_end`),
+o que confirmámos no assembly de `VelocityVerlet._omp_fn.1`. No fim do ciclo, as 48 threads entram nesse mutex uma de cada vez, cerca de 73 µs por passo.
+
+## Solução proposta
+
+Substituir a redução do OpenMP por somas parciais por thread:
+
+- Cada thread acumula `ps` e `v2` em variáveis locais (privadas) durante o `omp for`.
+- No fim, cada thread escreve os seus dois valores na sua própria linha de `parciais[t]`.
+- Depois da barreira implícita do fim do `parallel`, a thread master soma as 48 linhas.
+
+Cada linha de `parciais` tem 32 doubles (256 B), que é exatamente uma linha de cache do A64FX, e o array está alinhado a 256 B.
+Assim não há false sharing.
+Também não há data races: cada thread só escreve na sua linha, e a leitura só acontece depois da barreira.
+O `omp for` fica com `nowait`, porque a barreira do fim do `parallel` já garante a sincronização.
+
+|                              | Tempo total    | CPI    | #I      | Ciclos  | % computeAccelerations | % barreiras | % mutex/atómicos | % ocupação de cores |
+| ---------------------------- | -------------- | ------ | ------- | ------- | ---------------------- | ----------- | ---------------- | ------------------- |
+| `reduction(+ : psum, v2sum)` | 0.308 s        | 0.686  | 39.44 G | 27.05 G | 84.7 %                 | 11.1 %      | 3.8 %            | 91.4 %              |
+| Somas parciais por thread    | 0.297 s        | 0.629  | 41.41 G | 26.05 G | 85.4 %                 | 13.5 %      | 0.6 %            | 91.4 %              |
+| Ganho                        | −3.6 % (1.04×) | −8.3 % | +5.0 %  | −3.7 %  | +0.7 pp                | +2.4 pp     | −3.2 pp          | 0 pp                |
+
+# Desequilíbrio da thread master (cache L1)
+
+## Problema encontrado
+
+Após as somas parciais no VelocityVerlet, a medição por thread mostrou a thread 0 8.5% mais lenta no computeAccelerations (0.239 s contra 0.220 s), e as outras 47 ficavam à espera dela na barreira.
+
+A causa são conflitos de conjunto na L1 do A64FX (64 KB, 4 vias, conjuntos que se repetem a cada 16 KB). Os temporários `r2v`/`inv2v` vivem na stack de cada thread. Nas threads 1 a 47 caem sempre nos mesmos conjuntos, mas na thread 0 (stack principal) o endereço depende de quem chama a função. Com a nova frame do VelocityVerlet, passaram a disputar os mesmos conjuntos que `rx`/`ry`/`rz`: 5 fluxos para 4 vias.
+
+## Solução proposta
+
+Alinhar os temporários a 16 KB, para que fiquem nos mesmos conjuntos em todas as threads:
+
+    struct { double r2v[BLK]; double inv2v[BLK]; } tmp __attribute__((aligned(16384)));
+
+|        | Tempo total | t0 (forces) | Desequilíbrio | Espera em barreiras |
+| ------ | ----------- | ----------- | ------------- | ------------------- |
+| Antes  | 0.279 s     | 0.236 s     | 7.2 %         | 25.2 ms             |
+| Depois | 0.272 s     | 0.224 s     | 1.6 %         | 14.9 ms             |
+| Ganho  | −2.5 %      | −5.1 %      | −5.6%         | −41 %               |

@@ -12,6 +12,7 @@
     divisões da pressão, temperatura, etc. continuem exatas.
 */
 #include "md.h"
+#include <omp.h>
 
 /* Energia potencial das posições do último computeAccelerations(). Calcula-se no
    mesmo ciclo das forças (mesmos pares, mesmo 1/r2) e o Potential() só a devolve:
@@ -24,16 +25,27 @@ static double PE_atual = 0.0;
 #define BLK 512
 #endif
 
+#define MAX_THREADS_F 192
+static double pot_parcial[MAX_THREADS_F][32] __attribute__((aligned(256)));
+
 void computeAccelerations(void)
 {
     double pot = 0.0;
+    int nthreads = 1;
 
-#pragma omp parallel reduction(+ : pot)
+#pragma omp parallel
     {
         /* temporários privados de cada thread (na stack): sem partilha, sem data races */
-        double r2v[BLK], inv2v[BLK];
+        struct
+        {
+            double r2v[BLK];
+            double inv2v[BLK];
+        } tmp __attribute__((aligned(16384)));
+        double *const r2v = tmp.r2v;
+        double *const inv2v = tmp.inv2v;
+        double pot_t = 0.0;
 
-#pragma omp for schedule(static)
+#pragma omp for schedule(static) nowait
         for (int i = 0; i < N; i++)
         {
             const double xi = rx[i];
@@ -61,7 +73,8 @@ void computeAccelerations(void)
                 {
                     const double r2 = r2v[k];
                     const double inv0 = 1.0 / r2;
-                    inv2v[k] = (r2 > 0.0) ? inv0 * (2.0 - r2 * inv0) : 0.0;
+                    // inv2v[k] = (r2 > 0.0) ? inv0 : 0.0;
+                    inv2v[k] = (r2 > 0.0) ? inv0 * (2.0 - r2 * inv0) : 0.0; // correçao de precisao
                 }
 
                 /* fase 3: potências em árvore (sigma = epsilon = 1), o 24 fica para o fim */
@@ -89,9 +102,17 @@ void computeAccelerations(void)
             ax[i] = 24.0 * fx;
             ay[i] = 24.0 * fy;
             az[i] = 24.0 * fz;
-            pot += ui;
+            pot_t += ui;
         }
+        const int t = omp_get_thread_num();
+        pot_parcial[t][0] = pot_t;
+        if (t == 0)
+            nthreads = omp_get_num_threads();
     }
+
+    for (int t = 0; t < nthreads; t++)
+        pot += pot_parcial[t][0];
+
     PE_atual = 4.0 * epsilon * pot;
 }
 

@@ -44,6 +44,9 @@ cleanBenchmarks: clean
 	       err.*
 
 export OMP_NUM_THREADS ?= 48
+export OMP_PROC_BIND ?= close
+export OMP_PLACES ?= cores
+export OMP_WAIT_POLICY ?= active
 
 run: md
 	./md < inputdata.txt
