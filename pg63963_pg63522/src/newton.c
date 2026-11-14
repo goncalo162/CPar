@@ -49,17 +49,10 @@ void computeAccelerations(void)
         double *const r2a = tmp.r2a, *const r2b = tmp.r2b;
         double *const inva = tmp.inva, *const invb = tmp.invb;
 
-/* Compilar -DNEWTON_STATIC1 para ensaiar escalonamento ciclico;
-           baseline dynamic,6 mantido para comparacao. */
-#if defined(NEWTON_STATIC1)
-#pragma omp for schedule(static, 1)
-#elif defined(NEWTON_DYNAMIC3)
-#pragma omp for schedule(dynamic, 3)
-#elif defined(NEWTON_GUIDED1)
-#pragma omp for schedule(guided, 1)
-#else
+        /* Compilar -DNEWTON_STATIC1 para ensaiar escalonamento ciclico;
+                   baseline dynamic,6 mantido para comparacao. */
+
 #pragma omp for schedule(dynamic, 6)
-#endif
         for (int i = 0; i < N; i += 2)
         {
             const int tem_b = (i + 1 < N); /* N ímpar: a última iteração só tem i */
@@ -128,7 +121,7 @@ void computeAccelerations(void)
 
                 /* fase 3: testar -DNEWTON_FORCE_SIMD caso compiler nao vectorize. */
 #if defined(NEWTON_FORCE_SIMD)
-#pragma omp simd reduction(+:fxa,fya,fza,ua,fxb,fyb,fzb,ub)
+#pragma omp simd reduction(+ : fxa, fya, fza, ua, fxb, fyb, fzb, ub)
 #endif
                 for (int k = 0; k < n; k++)
                 {

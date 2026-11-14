@@ -1,0 +1,88 @@
+################ INFO
+data:      Sat Nov 14 04:23:58 WET 2026
+nó:        cna0780.deucalion.macc.fccn.pt
+gcc:       gcc (GCC) 15.2.0
+threads:   48
+schedule:  (o que está no código)
+md5 src:   54d515209e42d329b104c428380bdb4a  src/MD.cpp 016bbf5fe0e563646d59d6a4622dcc9b  src/forces.c bcb1a86962a5d7be42a009243245867d  src/newton.c 
+CFLAGS:    CFLAGS  = -O3 -ffast-math -fopenmp -mcpu=a64fx -msve-vector-bits=512
+KERNEL:    KERNEL_FLAGS = -mlow-precision-div
+kernel:    src/newton.c
+
+################ THREADS=48
+======== RUN 1: perf stat x 10 (tempo total + contadores)
+  run 1: 0.533831201 s
+  run 2: 0.206654866 s
+  run 3: 0.166157249 s
+  run 4: 0.168958993 s
+  run 5: 0.165124067 s
+  run 6: 0.165639133 s
+  run 7: 0.165139477 s
+  run 8: 0.166667935 s
+  run 9: 0.167787579 s
+  run 10: 0.165379760 s
+  média:   0.2071 s
+  melhor:  0.1651 s
+  pior:    0.5338 s
+  mediana: 0.1664 s
+--- contadores da run mediana (run 3):
+
+ Performance counter stats for './md':
+
+           6978.74 msec task-clock                #   42.001 CPUs utilized          
+       13951696124      cycles                    #    1.999 GHz                      (97.75%)
+       18601328858      instructions              #    1.33  insn per cycle           (97.71%)
+        4137541332      L1-dcache-loads           #  592.878 M/sec                    (97.71%)
+         284480566      L1-dcache-load-misses     #    6.88% of all L1-dcache accesses  (97.71%)
+        1283763802      br_pred                   #  183.954 M/sec                    (97.80%)
+           7864984      br_mis_pred               #    1.127 M/sec                    (98.16%)
+          38000545      fp_dp_fixed_ops_spec      #    5.445 M/sec                    (97.21%)
+       26686484514      fp_dp_scale_ops_spec      # 3823.970 M/sec                    (96.85%)
+
+       0.166157249 seconds time elapsed
+
+       6.967547000 seconds user
+       0.010276000 seconds sys
+
+
+======== RUN 2: perf record + report (% por função)
+    81.76%  md_prof             [.] computeAccelerations._omp_fn.0
+     7.78%  libgomp.so.1.0.0    [.] gomp_barrier_wait_end
+     4.14%  libgomp.so.1.0.0    [.] gomp_team_barrier_wait_end
+     1.96%  libc-2.28.so        [.] __GI___memset_generic
+     1.43%  libgomp.so.1.0.0    [.] __aarch64_ldadd4_acq_rel
+     0.52%  libgomp.so.1.0.0    [.] gomp_iter_dynamic_next
+     0.42%  libgomp.so.1.0.0    [.] __aarch64_ldadd8_sync
+     0.42%  libgomp.so.1.0.0    [.] gomp_barrier_wait
+     0.33%  libgomp.so.1.0.0    [.] gomp_team_barrier_wait_final
+     0.24%  md_prof             [.] VelocityVerlet._omp_fn.1
+     0.17%  libgomp.so.1.0.0    [.] gomp_team_barrier_wait
+     0.14%  libgomp.so.1.0.0    [.] gomp_thread_start
+     0.11%  md_prof             [.] VelocityVerlet._omp_fn.0
+     0.10%  libgomp.so.1.0.0    [.] gomp_work_share_start
+     0.09%  libgomp.so.1.0.0    [.] gomp_team_start
+     0.09%  md_prof             [.] memset@plt
+     0.07%  libc-2.28.so        [.] __GI___printf_fp_l
+     0.05%  md_prof             [.] GOMP_loop_nonmonotonic_dynamic_next@plt
+     0.04%  [unknown]           [k] 0xffff0000100833d4
+     0.03%  libgomp.so.1.0.0    [.] gomp_init_task
+     0.03%  libgomp.so.1.0.0    [.] gomp_work_share_end
+     0.03%  libgomp.so.1.0.0    [.] omp_get_num_threads
+     0.01%  md_prof             [.] GOMP_loop_nonmonotonic_dynamic_start@plt
+     0.01%  libc-2.28.so        [.] hack_digit
+     0.01%  libm-2.28.so        [.] __log_finite
+     0.00%  ld-2.28.so          [.] _dl_lookup_symbol_x
+     0.00%  libc-2.28.so        [.] __ctype_init
+     0.00%  libc-2.28.so        [.] getenv
+     0.00%  ld-2.28.so          [.] __GI___tunables_init
+     0.00%  libpthread-2.28.so  [.] __ctype_init@plt
+     0.00%  libpthread-2.28.so  [.] start_thread
+     0.00%  [unknown]           [k] 0xffff000010096d54
+     0.00%  libgomp.so.1.0.0    [.] gomp_init_affinity
+     0.00%  ld-2.28.so          [.] _dl_start
+     0.00%  libc-2.28.so        [.] __clone
+     0.00%  ld-2.28.so          [.] _start
+     0.00%  libpthread-2.28.so  [.] pthread_setaffinity_np@@GLIBC_2.17
+     0.00%  [unknown]           [k] 0xffff000010081504
+
+################ FIM
