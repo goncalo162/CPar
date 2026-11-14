@@ -135,3 +135,52 @@ Alinhar os temporários a 16 KB, para que fiquem nos mesmos conjuntos em todas a
 | Antes  | 0.279 s     | 0.236 s     | 7.2 %         | 25.2 ms             |
 | Depois | 0.272 s     | 0.224 s     | 1.6 %         | 14.9 ms             |
 | Ganho  | −2.5 %      | −5.1 %      | −5.6%         | −41 %               |
+
+# Tiling em i (duas partículas por iteração)
+
+## Problema encontrado
+
+Os arrays `rx`/`ry`/`rz` (120 KB) não cabem na L1 (64 KB). Para cada partícula i, os 5000 j voltavam a ser lidos da L2.
+Cerca de 486 M falhas de L1, concentradas na fase 1. Na fase 3, cada acumulador (`fx`, `fy`, `fz`, `ui`) formava uma única
+cadeia de dependências: cada FMA esperava 9 ciclos pela anterior.
+
+## Solução proposta
+
+Cada iteração do `omp for` passa a tratar duas partículas (i e i+1) contra o mesmo bloco de j:
+
+- cada `rx`/`ry`/`rz[j]` é carregado uma vez e serve as duas partículas, o que dá metade do tráfego da L2 por par;
+- cada partícula tem os seus acumuladores, o que dá 2 cadeias de soma independentes na fase 3.
+
+Os temporários passam a 4 arrays (16 KB, alinhados a 16 KB) e continuam a caber na L1. Testámos também 4 partículas por iteração,
+mas os 32 registos SVE deixam de chegar (o compilador passa a guardar valores na stack), por isso ficámos com 2.
+
+|                            | Tempo total | Ciclos  | #I      | L1 miss | Loads L1 |
+| -------------------------- | ----------- | ------- | ------- | ------- | -------- |
+| Antes                      | 0.272 s     | 23.58 G | 36.94 G | 485.8 M | 7.33 G   |
+| Tiling em i (2 partículas) | 0.247 s     | 21.13 G | 32.96 G | 245.0 M | 5.25 G   |
+| Ganho                      | −9.2 %      | −10.4 % | −10.8 % | −49.6 % | −28 %    |
+
+# r2 > 0 fora do ciclo + reconfirmação do BLK
+
+## Problema encontrado
+
+A fase 2 tinha um `r2 > 0 ? ... : 0` dentro do ciclo vetorizado só para tratar o caso j == i.
+Isso custava 5 instruções extra por iteração (30 → 25), em todos os pares.
+
+## Solução proposta
+
+Tirar o teste do ciclo. Depois da fase 2, o termo j == i é posto a zero com 2 `if` escalares por bloco
+(`inva[i-j0] = 0`, `invb[ib-j0] = 0`). Não cria nenhuma dependência nova: é uma escrita isolada depois do ciclo.
+Depois do tiling, o BLK foi testado de novo e o 512 continua a ser o melhor.
+
+| Versão        | Tempo (s) | Ciclos | Instruções |
+| ------------- | --------- | ------ | ---------- |
+| tiling U=2    | 0.2470    | 21.13G | 32.96G     |
+| r2>0 removido | 0.2396    | 20.62G | 30.46G     |
+| Ganho         | −3.0%     | −2.4%  | −7.6%      |
+
+| BLK | 128   | 256   | 384   | 512   | 768   | 1024  |
+| --- | ----- | ----- | ----- | ----- | ----- | ----- |
+| s   | 0.267 | 0.249 | 0.242 | 0.239 | 0.238 | 0.252 |
+
+O 768 fica igual ao 512, dentro do ruído.

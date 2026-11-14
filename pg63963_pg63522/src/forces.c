@@ -35,84 +35,112 @@ void computeAccelerations(void)
 
 #pragma omp parallel
     {
-        /* temporários privados de cada thread (na stack): sem partilha, sem data races */
+        double pot_t = 0.0; /* soma local desta thread */
+
+        /* Temporários privados de cada thread, para as duas partículas (a = i, b = i+1).
+           Alinhados a 16 KB (período dos conjuntos da L1 do A64FX): ficam nos mesmos
+           conjuntos da cache em todas as threads, incluindo a master. */
         struct
         {
-            double r2v[BLK];
-            double inv2v[BLK];
+            double r2a[BLK], r2b[BLK], inva[BLK], invb[BLK];
         } tmp __attribute__((aligned(16384)));
-        double *const r2v = tmp.r2v;
-        double *const inv2v = tmp.inv2v;
-        double pot_t = 0.0;
+        double *const r2a = tmp.r2a, *const r2b = tmp.r2b;
+        double *const inva = tmp.inva, *const invb = tmp.invb;
 
+        /* Tiling em i: cada iteração trata duas partículas (i e i+1) contra o mesmo
+           bloco de j. Cada rx/ry/rz[j] carregado serve as duas (metade dos loads da L2
+           por par) e cada partícula tem os seus acumuladores (duas cadeias de soma
+           independentes na fase 3). */
 #pragma omp for schedule(static) nowait
-        for (int i = 0; i < N; i++)
+        for (int i = 0; i < N; i += 2)
         {
-            const double xi = rx[i];
-            const double yi = ry[i];
-            const double zi = rz[i];
-            double fx = 0.0, fy = 0.0, fz = 0.0, ui = 0.0;
+            const int tem_b = (i + 1 < N);    /* N ímpar: a última iteração só tem i */
+            const int ib = tem_b ? i + 1 : i; /* sem b, repete i e não guarda o resultado */
 
-            /* cadeia longa de dependências partida em 3 ciclos curtos por bloco de j:
-               o CPU consegue ter muitas iterações independentes em execução (esconde a latência) */
+            const double xa = rx[i], ya = ry[i], za = rz[i];
+            const double xb = rx[ib], yb = ry[ib], zb = rz[ib];
+            double fxa = 0.0, fya = 0.0, fza = 0.0, ua = 0.0;
+            double fxb = 0.0, fyb = 0.0, fzb = 0.0, ub = 0.0;
+
             for (int j0 = 0; j0 < N; j0 += BLK)
             {
                 const int n = (N - j0 < BLK) ? N - j0 : BLK;
 
-                /* fase 1: distância ao quadrado */
+                /* fase 1: distância ao quadrado, rx/ry/rz[j] lidos uma vez para as duas */
                 for (int k = 0; k < n; k++)
                 {
-                    const double dx = xi - rx[j0 + k];
-                    const double dy = yi - ry[j0 + k];
-                    const double dz = zi - rz[j0 + k];
-                    r2v[k] = dx * dx + dy * dy + dz * dz;
+                    const double xj = rx[j0 + k], yj = ry[j0 + k], zj = rz[j0 + k];
+                    const double dxa = xa - xj, dya = ya - yj, dza = za - zj;
+                    const double dxb = xb - xj, dyb = yb - yj, dzb = zb - zj;
+                    r2a[k] = dxa * dxa + dya * dya + dza * dza;
+                    r2b[k] = dxb * dxb + dyb * dyb + dzb * dzb;
                 }
 
-                /* fase 2: 1/r2 aproximado + 1 iteração de Newton; j == i -> 0 */
+                /* fase 2: 1/r2 aproximado (-mlow-precision-div) + 1 iteração de Newton
+                   (precisão total do double); j == i -> 0, sem ramo */
                 for (int k = 0; k < n; k++)
                 {
-                    const double r2 = r2v[k];
-                    const double inv0 = 1.0 / r2;
-                    // inv2v[k] = (r2 > 0.0) ? inv0 : 0.0;
-                    inv2v[k] = (r2 > 0.0) ? inv0 * (2.0 - r2 * inv0) : 0.0; // correçao de precisao
+                    const double ra = r2a[k], rb = r2b[k];
+                    const double ia = 1.0 / ra, ib0 = 1.0 / rb;
+                    inva[k] = ia * (2.0 - ra * ia);
+                    invb[k] = ib0 * (2.0 - rb * ib0);
                 }
+                /* par da partícula consigo própria (r2 = 0): só existe no bloco que
+                   contém i (e ib); anula-se aqui, fora do ciclo, em vez de testar r2 > 0
+                   em todos os pares */
+                if (i >= j0 && i < j0 + n)
+                    inva[i - j0] = 0.0;
+                if (ib >= j0 && ib < j0 + n)
+                    invb[ib - j0] = 0.0;
 
-                /* fase 3: potências em árvore (sigma = epsilon = 1), o 24 fica para o fim */
+                /* fase 3: Lennard-Jones (sigma = epsilon = 1), potências em árvore,
+                   o 24 fica para o fim; acumuladores separados para a e b */
                 for (int k = 0; k < n; k++)
                 {
-                    const double dx = xi - rx[j0 + k];
-                    const double dy = yi - ry[j0 + k];
-                    const double dz = zi - rz[j0 + k];
-                    const double inv2 = inv2v[k];
+                    const double xj = rx[j0 + k], yj = ry[j0 + k], zj = rz[j0 + k];
 
-                    const double dois_inv2 = inv2 + inv2;
-                    const double inv4 = inv2 * inv2;
-                    const double inv6 = inv4 * inv2;
-                    const double inv8 = inv4 * inv4;
-                    const double s = dois_inv2 * inv4 - 1.0;
-                    const double f = inv8 * s;
+                    const double i2a = inva[k];
+                    const double i4a = i2a * i2a, i6a = i4a * i2a, i8a = i4a * i4a;
+                    const double fa = i8a * ((i2a + i2a) * i4a - 1.0);
 
-                    ui += inv6 * (inv6 - 1.0);
-                    fx += dx * f;
-                    fy += dy * f;
-                    fz += dz * f;
+                    const double i2b = invb[k];
+                    const double i4b = i2b * i2b, i6b = i4b * i2b, i8b = i4b * i4b;
+                    const double fb = i8b * ((i2b + i2b) * i4b - 1.0);
+
+                    ua += i6a * (i6a - 1.0);
+                    ub += i6b * (i6b - 1.0);
+                    fxa += (xa - xj) * fa;
+                    fxb += (xb - xj) * fb;
+                    fya += (ya - yj) * fa;
+                    fyb += (yb - yj) * fb;
+                    fza += (za - zj) * fa;
+                    fzb += (zb - zj) * fb;
                 }
             }
 
-            ax[i] = 24.0 * fx;
-            ay[i] = 24.0 * fy;
-            az[i] = 24.0 * fz;
-            pot_t += ui;
+            ax[i] = 24.0 * fxa;
+            ay[i] = 24.0 * fya;
+            az[i] = 24.0 * fza;
+            pot_t += ua;
+            if (tem_b)
+            {
+                ax[ib] = 24.0 * fxb;
+                ay[ib] = 24.0 * fyb;
+                az[ib] = 24.0 * fzb;
+                pot_t += ub;
+            }
         }
+
         const int t = omp_get_thread_num();
         pot_parcial[t][0] = pot_t;
         if (t == 0)
             nthreads = omp_get_num_threads();
-    }
+    } /* fim do parallel = barreira: todas as parciais já estão escritas */
 
     for (int t = 0; t < nthreads; t++)
         pot += pot_parcial[t][0];
 
+    /* soma sobre todos os pares i != j = o "2 * Pot" do Potential original */
     PE_atual = 4.0 * epsilon * pot;
 }
 
