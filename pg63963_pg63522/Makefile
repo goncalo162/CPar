@@ -2,8 +2,8 @@ CC = gcc
 SRC = src/
 CFLAGS  = -O3 -ffast-math -fopenmp -mcpu=a64fx -msve-vector-bits=512
 REPCFLAGS = $(CFLAGS) -g
-# flags extra só para os kernels O(N^2) (src/forces.c): divisão aproximada
-# (frecpe + Newton); a precisão total é recuperada no código (ver forces.c)
+# flags extra só para os kernels O(N^2) (src/newton.c): divisão aproximada
+# (frecpe + Newton); a precisão total é recuperada no código (ver newton.c)
 KERNEL_FLAGS = -mlow-precision-div
 LDFLAGS = -Wl,--build-id=sha1
 
@@ -16,11 +16,11 @@ BUS_EVENTS = bus_read_total_mem,bus_write_total_mem
 .DEFAULT_GOAL = md
 .PHONY: clean cleanBenchmarks run runTest runRecord
 
-OBJS = MD.o forces.o
+OBJS = MD.o newton.o
 
-md: $(SRC)MD.cpp $(SRC)forces.c $(SRC)md.h
+md: $(SRC)MD.cpp $(SRC)newton.c $(SRC)md.h
 	$(CC) $(CFLAGS) -x c -c $(SRC)MD.cpp -o MD.o
-	$(CC) $(CFLAGS) $(KERNEL_FLAGS) -c $(SRC)forces.c -o forces.o
+	$(CC) $(CFLAGS) $(KERNEL_FLAGS) -c $(SRC)newton.c -o newton.o
 	$(CC) $(CFLAGS) $(OBJS) -lm $(LDFLAGS) -o md
 
 clean:
@@ -59,8 +59,8 @@ runTest:
 	echo; echo "== Contadores de memória (cores $(BUS_PUS)) =="; \
 	cat bus_counters.txt
 
-runRecord: $(SRC)MD.cpp $(SRC)forces.c $(SRC)md.h
+runRecord: $(SRC)MD.cpp $(SRC)newton.c $(SRC)md.h
 	$(CC) $(REPCFLAGS) -x c -c $(SRC)MD.cpp -o MD.o
-	$(CC) $(REPCFLAGS) $(KERNEL_FLAGS) -c $(SRC)forces.c -o forces.o
+	$(CC) $(REPCFLAGS) $(KERNEL_FLAGS) -c $(SRC)newton.c -o newton.o
 	$(CC) $(REPCFLAGS) $(OBJS) -lm $(LDFLAGS) -o md
 	perf record -F 1000 -g ./md < inputdata.txt
