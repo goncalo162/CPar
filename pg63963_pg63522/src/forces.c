@@ -13,7 +13,7 @@
 */
 #include "md.h"
 #include <omp.h>
-
+#include <arm_sve.h>
 /* Energia potencial das posições do último computeAccelerations(). Calcula-se no
    mesmo ciclo das forças (mesmos pares, mesmo 1/r2) e o Potential() só a devolve:
    no ciclo principal as posições não mudam entre computeAccelerations() (dentro do
@@ -76,14 +76,41 @@ void computeAccelerations(void)
                     r2b[k] = dxb * dxb + dyb * dyb + dzb * dzb;
                 }
 
-                /* fase 2: 1/r2 aproximado (-mlow-precision-div) + 1 iteração de Newton
-                   (precisão total do double); j == i -> 0, sem ramo */
-                for (int k = 0; k < n; k++)
+                /* fase 2: 1/r2 = x0·(1+e)(1+e²)(1+e⁴), com x0 = frecpe(r2) e e = 1 - r2·x0
+                   (cadeia de 5 em vez de 7); 2 vetores por volta (k e k+vl):
+                   4 cadeias independentes */
                 {
-                    const double ra = r2a[k], rb = r2b[k];
-                    const double ia = 1.0 / ra, ib0 = 1.0 / rb;
-                    inva[k] = ia * (2.0 - ra * ia);
-                    invb[k] = ib0 * (2.0 - rb * ib0);
+                    const svbool_t todos = svptrue_b64();
+                    const svfloat64_t um = svdup_f64(1.0);
+                    const int vl = (int)svcntd();
+                    for (int k = 0; k < n; k += 2 * vl)
+                    {
+                        const svbool_t p0 = svwhilelt_b64(k, n), p1 = svwhilelt_b64(k + vl, n);
+                        const svfloat64_t ra0 = svld1(p0, r2a + k), rb0 = svld1(p0, r2b + k);
+                        const svfloat64_t ra1 = svld1(p1, r2a + k + vl), rb1 = svld1(p1, r2b + k + vl);
+                        const svfloat64_t xa0 = svrecpe(ra0), xb0 = svrecpe(rb0);
+                        const svfloat64_t xa1 = svrecpe(ra1), xb1 = svrecpe(rb1);
+                        const svfloat64_t ea0 = svmsb_x(todos, ra0, xa0, um), eb0 = svmsb_x(todos, rb0, xb0, um);
+                        const svfloat64_t ea1 = svmsb_x(todos, ra1, xa1, um), eb1 = svmsb_x(todos, rb1, xb1, um);
+                        const svfloat64_t ea0_2 = svmul_x(todos, ea0, ea0), eb0_2 = svmul_x(todos, eb0, eb0);
+                        const svfloat64_t ea1_2 = svmul_x(todos, ea1, ea1), eb1_2 = svmul_x(todos, eb1, eb1);
+                        svfloat64_t pa0 = svmla_x(todos, xa0, xa0, ea0), pb0 = svmla_x(todos, xb0, xb0, eb0);
+                        svfloat64_t pa1 = svmla_x(todos, xa1, xa1, ea1), pb1 = svmla_x(todos, xb1, xb1, eb1);
+                        const svfloat64_t ea0_4 = svmul_x(todos, ea0_2, ea0_2), eb0_4 = svmul_x(todos, eb0_2, eb0_2);
+                        const svfloat64_t ea1_4 = svmul_x(todos, ea1_2, ea1_2), eb1_4 = svmul_x(todos, eb1_2, eb1_2);
+                        pa0 = svmla_x(todos, pa0, pa0, ea0_2);
+                        pb0 = svmla_x(todos, pb0, pb0, eb0_2);
+                        pa1 = svmla_x(todos, pa1, pa1, ea1_2);
+                        pb1 = svmla_x(todos, pb1, pb1, eb1_2);
+                        pa0 = svmla_x(todos, pa0, pa0, ea0_4);
+                        pb0 = svmla_x(todos, pb0, pb0, eb0_4);
+                        pa1 = svmla_x(todos, pa1, pa1, ea1_4);
+                        pb1 = svmla_x(todos, pb1, pb1, eb1_4);
+                        svst1(p0, inva + k, pa0);
+                        svst1(p0, invb + k, pb0);
+                        svst1(p1, inva + k + vl, pa1);
+                        svst1(p1, invb + k + vl, pb1);
+                    }
                 }
                 /* par da partícula consigo própria (r2 = 0): só existe no bloco que
                    contém i (e ib); anula-se aqui, fora do ciclo, em vez de testar r2 > 0
