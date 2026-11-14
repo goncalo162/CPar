@@ -1,0 +1,9 @@
+################ INFO
+data:      Sat Nov 14 01:24:25 WET 2026
+nó:        cna0780.deucalion.macc.fccn.pt
+gcc:       gcc (GCC) 15.2.0
+threads:   48
+schedule:  (o que está no código)
+md5 src:   65ae80d7d1d9fea29dba4f44477e6ec1  src/MD.cpp 21a10a4f8dd73b43498f3b44074cd889  src/forces.c 
+CFLAGS:    CFLAGS  = -x c -O3 -ffast-math -fopenmp -mcpu=a64fx -msve-vector-bits=512 -fmodulo-sched -fmodulo-sched-allow-regmoves
+KERNEL:    KERNEL_FLAGS = -mlow-precision-div
