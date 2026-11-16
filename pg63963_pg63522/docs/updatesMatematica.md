@@ -184,3 +184,35 @@ Depois do tiling, o BLK foi testado de novo e o 512 continua a ser o melhor.
 | s   | 0.267 | 0.249 | 0.242 | 0.239 | 0.238 | 0.252 |
 
 O 768 fica igual ao 512, dentro do ruído.
+
+################ 48 threads | ciclo principal = 0.1597 s (201 passos)
+
+Tempos por thread somados nos 201 passos (s).
+
+## VelocityVerlet (região = arranque + trabalho + espera)
+
+| região     | região | arranque | trabalho médio | mín    | máx    | espera |
+| ---------- | ------ | -------- | -------------- | ------ | ------ | ------ |
+| VV ciclo 1 | 0.0058 | 0.0023   | 0.0003         | 0.0002 | 0.0007 | 0.0031 |
+| VV ciclo 2 | 0.0062 | 0.0027   | 0.0005         | 0.0004 | 0.0007 | 0.0031 |
+
+## computeAccelerations: região 0.1446 s (90.6% do ciclo), 2 'omp for'
+
+| parte                   | trabalho médio | mín    | máx    | desequilíbrio (máx/média-1) | espera na barreira (média) | % do ciclo (espera) |
+| ----------------------- | -------------- | ------ | ------ | --------------------------- | -------------------------- | ------------------- |
+| arranque (fork)         | 0.0024         | 0.0023 | 0.0025 |                             |                            |                     |
+| ciclo 1 (forças)        | 0.1205         | 0.1194 | 0.1218 | 1.1%                        | 0.0051                     | 3.2%                |
+| ciclo 2 (redução)       | 0.0126         | 0.0121 | 0.0132 | 4.8%                        | 0.0016                     | 1.0%                |
+| resto + barreira do fim | 0.0003         |        |        |                             | 0.0022                     | 1.4%                |
+
+| fora das regiões (só a master) | 0.0031 s | 1.9% do ciclo |
+| arranque das regiões (fork, todas) | 0.0074 s | 4.6% |
+| espera em barreiras (todas) | 0.0152 s | 9.5% |
+
+forças, 5 threads mais lentas: t12 0.1218, t3 0.1215, t40 0.1215, t28 0.1215, t47 0.1215
+forças, 5 threads mais rápidas: t23 0.1194, t36 0.1195, t41 0.1195, t45 0.1197, t27 0.1197
+forças por grupo de 12 threads (1 CMG com close/cores):
+threads 0- 11: trabalho médio 0.1205 s espera média 0.0052 s
+threads 12- 23: trabalho médio 0.1206 s espera média 0.0050 s
+threads 24- 35: trabalho médio 0.1203 s espera média 0.0053 s
+threads 36- 47: trabalho médio 0.1205 s espera média 0.0051 s

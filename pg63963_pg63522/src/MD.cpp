@@ -23,9 +23,9 @@ double NA = 6.022140857e23;
 double kBSI = 1.38064852e-23;
 double L, Tinit;
 
-double rx[MAXPART], ry[MAXPART], rz[MAXPART];
-double vx[MAXPART], vy[MAXPART], vz[MAXPART];
-double ax[MAXPART], ay[MAXPART], az[MAXPART];
+double rx[MAXPART] __attribute__((aligned(256))), ry[MAXPART] __attribute__((aligned(256))), rz[MAXPART] __attribute__((aligned(256)));
+double vx[MAXPART] __attribute__((aligned(256))), vy[MAXPART] __attribute__((aligned(256))), vz[MAXPART] __attribute__((aligned(256)));
+double ax[MAXPART] __attribute__((aligned(256))), ay[MAXPART] __attribute__((aligned(256))), az[MAXPART] __attribute__((aligned(256)));
 #define MAX_THREADS 192
 static double parciais[MAX_THREADS][32] __attribute__((aligned(256)));
 

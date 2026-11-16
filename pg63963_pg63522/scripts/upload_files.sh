@@ -31,6 +31,7 @@ ensure_connection() {
 DEFAULT_FILES=(
     "src/MD.cpp"
     "src/forces.c"
+    "src/newton.c"
     "src/md.h"
     "Makefile"
     "scripts/benchmark.sh"
