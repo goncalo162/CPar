@@ -48,20 +48,18 @@ cleanBenchmarks: clean
 	       err.*
 
 export OMP_NUM_THREADS ?= 48
+export OMP_PROC_BIND ?= close
+export OMP_PLACES ?= cores
+export OMP_WAIT_POLICY ?= active
 
-run: md
-	./md < inputdata.txt
+runTest:
+	@perf stat -e $(PERF_EVENTS) ./md < inputdata.txt
+
+runTestMem:
+	@perf stat -a -C $(BUS_PUS) -e $(BUS_EVENTS) ./md < inputdata.tx
 
 runSVECheck: svecheck
 	./md_check < inputdata.txt
-
-runTest:
-	@perf stat -a -C $(BUS_PUS) -e $(BUS_EVENTS) -o bus_counters.txt & \
-	BUS_PID=$$!; sleep 0.5; \
-	perf stat -e $(PERF_EVENTS) ./md < inputdata.txt; \
-	kill -INT $$BUS_PID 2>/dev/null; wait $$BUS_PID 2>/dev/null; \
-	echo; echo "== Contadores de memória (cores $(BUS_PUS)) =="; \
-	cat bus_counters.txt
 
 runRecord: $(SRC)MD.cpp $(SRC)forces.c $(SRC)md.h
 	$(CC) $(REPCFLAGS) -x c -c $(SRC)MD.cpp -o MD.o

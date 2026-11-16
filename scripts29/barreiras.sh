@@ -10,18 +10,120 @@
 # Uso (no Mac, na pasta CParTP):
 #   ./barreiras.sh          # 48 threads
 #   ./barreiras.sh 24 48    # outros nº de threads
+#   ./barreiras.sh --old    # igual, mas com o VelocityVerlet antigo (reduction) só na cópia temporária
+# (não escrevas comentários '# ...' na mesma linha no zsh: viram argumentos)
 #
 # Usa o src/ e o Makefile que estão NO CLUSTER (envia antes com upload_files.sh).
 
+VV_OLD=0
+if [ "$1" = "--old" ]; then VV_OLD=1; shift; fi
 THREADS="${*:-48}"
 REMOTE=deucalion
 DIR=/projects/F202500010HPCVLABUMINHO/2026-2027cp/mei.2026.pg63522
 ACCOUNT=f202500010hpcvlabuminhoa
 
-ssh "$REMOTE" "cd $DIR && THREADS='$THREADS' srun -A $ACCOUNT -p normal-arm -t 10 -N1 -n1 -c 48 bash -s" <<'REMOTO'
+ssh "$REMOTE" "cd $DIR && THREADS='$THREADS' VV_OLD='$VV_OLD' srun -A $ACCOUNT -p normal-arm -t 10 -N1 -n1 -c 48 bash -s" <<'REMOTO'
 ml GCC >/dev/null 2>&1
 W=$(mktemp -d "$PWD/barreiras_tmp.XXXX") || exit 1
 cp -r src Makefile inputdata.txt "$W"/ && cd "$W" || exit 1
+
+# --- com --old: troca, só nesta cópia temporária, o VelocityVerlet pelo antigo (com reduction) ---
+if [ "$VV_OLD" = 1 ]; then
+cat > vv_old.txt <<'VVOLD'
+double VelocityVerlet(double dt, int iter, FILE *fp)
+{
+    (void)iter;
+    (void)fp;
+
+    double psum = 0.0, v2sum = 0.0;
+    const double half_dt = 0.5 * dt;
+    const double half_dt2 = 0.5 * dt * dt;
+
+/* Primeira metade do passo: posições + primeira metade das velocidades. */
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < N; i++)
+    {
+        rx[i] += vx[i] * dt + ax[i] * half_dt2;
+        ry[i] += vy[i] * dt + ay[i] * half_dt2;
+        rz[i] += vz[i] * dt + az[i] * half_dt2;
+
+        vx[i] += ax[i] * half_dt;
+        vy[i] += ay[i] * half_dt;
+        vz[i] += az[i] * half_dt;
+    }
+
+    computeAccelerations();
+
+/* Segunda metade do passo + pressão nas paredes. */
+#pragma omp parallel for schedule(static) reduction(+ : psum, v2sum)
+    for (int i = 0; i < N; i++)
+    {
+        vx[i] += ax[i] * half_dt;
+        vy[i] += ay[i] * half_dt;
+        vz[i] += az[i] * half_dt;
+
+        if (rx[i] < 0.0)
+        {
+            vx[i] = -vx[i];
+            psum += 2.0 * m * fabs(vx[i]) / dt;
+        }
+        else if (rx[i] >= L)
+        {
+            vx[i] = -vx[i];
+            psum += 2.0 * m * fabs(vx[i]) / dt;
+        }
+
+        if (ry[i] < 0.0)
+        {
+            vy[i] = -vy[i];
+            psum += 2.0 * m * fabs(vy[i]) / dt;
+        }
+        else if (ry[i] >= L)
+        {
+            vy[i] = -vy[i];
+            psum += 2.0 * m * fabs(vy[i]) / dt;
+        }
+
+        if (rz[i] < 0.0)
+        {
+            vz[i] = -vz[i];
+            psum += 2.0 * m * fabs(vz[i]) / dt;
+        }
+        else if (rz[i] >= L)
+        {
+            vz[i] = -vz[i];
+            psum += 2.0 * m * fabs(vz[i]) / dt;
+        }
+
+        /* depois dos ressaltos (o sinal de v não muda v^2) */
+        v2sum += vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i];
+    }
+
+    V2_atual = v2sum;
+    return psum / (6.0 * L * L);
+}
+VVOLD
+python3 - <<'TROCA' || exit 1
+import re, sys
+m = open("src/MD.cpp").read().replace("\r\n", "\n")
+ms = list(re.finditer(r"^[ \t]*double[ \t]+VelocityVerlet[ \t]*\([^)]*\)[ \t]*\{?", m, re.M))
+ms = [x for x in ms if not m[x.end():].lstrip().startswith(";")]
+if len(ms) != 1:
+    sys.exit("troca: esperava 1 definição do VelocityVerlet, vi %d: %r" % (len(ms), [x.group(0) for x in ms]))
+a = ms[0].start()
+b = m.index("{", a)
+depth, e = 0, b
+while True:
+    if m[e] == "{": depth += 1
+    elif m[e] == "}":
+        depth -= 1
+        if depth == 0: break
+    e += 1
+m = m[:a] + open("vv_old.txt").read() + m[e + 1:].lstrip("\n")
+open("src/MD.cpp", "w").write(m)
+print("== VelocityVerlet antigo (reduction) aplicado na cópia temporária", file=sys.stderr)
+TROCA
+fi
 
 cat > instr.py <<'PY'
 import sys, os
@@ -61,13 +163,50 @@ h = h.replace("#endif", "#include <omp.h>\n#define BAR_MAXT 256\n"
               "extern double BAR_S[3][BAR_MAXT], BAR_W[3][BAR_MAXT], BAR_R[3];\n#endif")
 wr("md.h", h)
 
+import re
+def wrap_block(s, a, k):
+    """Região 'parallel { ...; omp for ... }': mede dentro do bloco (omp for passa a nowait)."""
+    le = s.index("\n", a)
+    prag = s[a:le].split("//")[0].strip()
+    b = s.index("{", le)
+    depth, e = 0, b
+    while True:
+        if s[e] == "{": depth += 1
+        elif s[e] == "}":
+            depth -= 1
+            if depth == 0: break
+        e += 1
+    body, n = re.subn(r"#[ \t]*pragma[ \t]+omp[ \t]+for[ \t]+schedule\([ \t]*static[ \t]*\)[^\n]*\n",
+                      "#pragma omp for schedule(static) nowait\n", s[b + 1:e])
+    if n != 1: sys.exit("instr: esperava 1 'omp for' dentro do bloco, vi %d" % n)
+    new = ("{ double t0_ = omp_get_wtime();\n" + prag + "\n{ double ts_ = omp_get_wtime();\n" + body +
+           "\n  double te_ = omp_get_wtime(); int id_ = omp_get_thread_num();\n"
+           f"  BAR_S[{k}][id_] += ts_ - t0_; BAR_W[{k}][id_] += te_ - ts_;\n}}\n"
+           f"BAR_R[{k}] += omp_get_wtime() - t0_; }}\n")
+    return s[:a] + new + s[e + 1:]
+
+def find1(s, rx, what):
+    ms = list(re.finditer(rx, s, re.M))
+    if len(ms) != 1: sys.exit("instr: não reconheci %s (%d candidatos)" % (what, len(ms)))
+    return ms[0].start()
+
 f = rd("forces.c")
-f = wrap(f, "#pragma omp parallel for schedule(static) reduction(+ : pot)", 1)
+P_OLD = "#pragma omp parallel for schedule(static) reduction(+ : pot)"
+if P_OLD in f:
+    f = wrap(f, P_OLD, 1)
+else:
+    f = wrap_block(f, find1(f, r"^[ \t]*#[ \t]*pragma[ \t]+omp[ \t]+parallel(?![ \t]+for)\b", "a região paralela do forces.c"), 1)
 wr("forces.c", f)
 
 m = rd("MD.cpp")
+P2 = "#pragma omp parallel for schedule(static) reduction(+ : psum, v2sum)"
+if P2 in m:
+    m = wrap(m, P2, 2)
+else:
+    # versão com somas parciais: parallel { ...; omp for nowait ... }
+    m = wrap_block(m, find1(m, r"^[ \t]*#[ \t]*pragma[ \t]+omp[ \t]+parallel(?![ \t]+for)\b", "o 2.º ciclo do VelocityVerlet"), 2)
+# (o 1.º ciclo só depois: o wrap dele cria um "#pragma omp parallel" que confundiria a procura acima)
 m = wrap(m, "#pragma omp parallel for schedule(static)\n", 0)
-m = wrap(m, "#pragma omp parallel for schedule(static) reduction(+ : psum, v2sum)", 2)
 def sub(old, new):
     global m
     if m.count(old) != 1: sys.exit("instr: nao encontrado 1x: " + old[:50])
@@ -119,6 +258,14 @@ if 1 in W:
     print(f"\ncomputeAccelerations, trabalho por thread: mín {min(w):.4f} (t{w.index(min(w))}), máx {max(w):.4f} (t{w.index(max(w))}), desequilíbrio (máx/média - 1) = {100*(max(w)/(sum(w)/nt)-1):.1f}%")
     ordem = sorted(range(nt), key=lambda t: -w[t])[:5]
     print("5 threads mais lentas: " + ", ".join(f"t{t} {w[t]:.4f}" for t in ordem))
+    # espera por thread (região - arranque - trabalho) no computeAccelerations, agrupada por CMG (12 cores)
+    esp = [R[1] - Sx[1][t] - W[1][t] for t in range(nt)]
+    print("\ncomputeAccelerations, espera na barreira por grupo de 12 threads (1 CMG com close/cores):")
+    for g in range(0, nt, 12):
+        grp = esp[g:g + 12]
+        print(f"  threads {g:3d}-{g + len(grp) - 1:3d}: espera média {sum(grp)/len(grp):.4f} s   trabalho médio {sum(W[1][g:g+12])/len(grp):.4f} s")
+    ordem = sorted(range(nt), key=lambda t: -esp[t])[:5]
+    print("5 threads que mais esperam (acabam cedo): " + ", ".join(f"t{t} {esp[t]:.4f}" for t in ordem))
 PY
 python3 instr.py src || exit 1
 make -s md >/dev/null || { echo "ERRO de compilação"; exit 1; }

@@ -26,6 +26,8 @@ double L, Tinit;
 double rx[MAXPART], ry[MAXPART], rz[MAXPART];
 double vx[MAXPART], vy[MAXPART], vz[MAXPART];
 double ax[MAXPART], ay[MAXPART], az[MAXPART];
+#define MAX_THREADS 192
+static double parciais[MAX_THREADS][32] __attribute__((aligned(256)));
 
 char atype[10];
 
@@ -268,7 +270,8 @@ double Kinetic(void)
     return 0.5 * m * V2_atual;
 }
 
-double VelocityVerlet(double dt, int iter, FILE *fp) {
+double VelocityVerlet(double dt, int iter, FILE *fp)
+{
     (void)iter;
     (void)fp;
 
@@ -276,9 +279,10 @@ double VelocityVerlet(double dt, int iter, FILE *fp) {
     const double half_dt = 0.5 * dt;
     const double half_dt2 = 0.5 * dt * dt;
 
-    // Primeira metade do passo: posições + 1ª metade das velocidades
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < N; i++) {
+// Primeira metade do passo: posições + primeira metade das velocidades.
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < N; i++)
+    {
         rx[i] += vx[i] * dt + ax[i] * half_dt2;
         ry[i] += vy[i] * dt + ay[i] * half_dt2;
         rz[i] += vz[i] * dt + az[i] * half_dt2;
@@ -290,32 +294,65 @@ double VelocityVerlet(double dt, int iter, FILE *fp) {
 
     computeAccelerations();
 
-    // Segunda metade do passo + pressão nas paredes (BRANCHLESS)
-    #pragma omp parallel for schedule(static) reduction(+ : psum, v2sum)
-    for (int i = 0; i < N; i++) {
-        vx[i] += ax[i] * half_dt;
-        vy[i] += ay[i] * half_dt;
-        vz[i] += az[i] * half_dt;
+    int nthreads = 1; // novo -> quantas threads houve; fora do parallel omp_get_num_threads() dá 1
+#pragma omp parallel  // novo -> era "parallel for ... reduction(+ : psum, v2sum)"; agora só abre as threads
+    {
+        double ps = 0.0, v2 = 0.0; // novo -> somas locais de cada thread (privadas, cada uma tem as suas)
 
-        // Detetar colisões (0.0 ou 1.0)
-        double hit_x = (rx[i] < 0.0) || (rx[i] >= L);
-        double hit_y = (ry[i] < 0.0) || (ry[i] >= L);
-        double hit_z = (rz[i] < 0.0) || (rz[i] >= L);
+#pragma omp for schedule(static) nowait // novo -> divide o ciclo; nowait porque a barreira do fim do parallel já chega
+        for (int i = 0; i < N; i++)
+        {
+            vx[i] += ax[i] * half_dt;
+            vy[i] += ay[i] * half_dt;
+            vz[i] += az[i] * half_dt;
 
-        // Valor absoluto ANTES de inverter a velocidade
-        double abs_vx = fabs(vx[i]);
-        double abs_vy = fabs(vy[i]);
-        double abs_vz = fabs(vz[i]);
+            if (rx[i] < 0.0)
+            {
+                vx[i] = -vx[i];
+                ps += 2.0 * m * fabs(vx[i]) / dt;
+            }
+            else if (rx[i] >= L)
+            {
+                vx[i] = -vx[i];
+                ps += 2.0 * m * fabs(vx[i]) / dt;
+            }
 
-        // Inverter velocidade se houver colisão (v *= -1 ou 1)
-        vx[i] *= (1.0 - 2.0 * hit_x);
-        vy[i] *= (1.0 - 2.0 * hit_y);
-        vz[i] *= (1.0 - 2.0 * hit_z);
+            if (ry[i] < 0.0)
+            {
+                vy[i] = -vy[i];
+                ps += 2.0 * m * fabs(vy[i]) / dt;
+            }
+            else if (ry[i] >= L)
+            {
+                vy[i] = -vy[i];
+                ps += 2.0 * m * fabs(vy[i]) / dt;
+            }
 
-        // Adicionar à pressão (apenas se hit == 1.0)
-        psum += (hit_x * abs_vx + hit_y * abs_vy + hit_z * abs_vz) * (2.0 * m / dt);
+            if (rz[i] < 0.0)
+            {
+                vz[i] = -vz[i];
+                ps += 2.0 * m * fabs(vz[i]) / dt;
+            }
+            else if (rz[i] >= L)
+            {
+                vz[i] = -vz[i];
+                ps += 2.0 * m * fabs(vz[i]) / dt;
+            }
 
-        v2sum += vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i];
+            v2 += vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i];
+        }
+
+        const int t = omp_get_thread_num(); // novo -> número desta thread (0..47)
+        parciais[t][0] = ps;                // novo -> guarda o ps desta thread na SUA linha
+        parciais[t][1] = v2;                // novo -> guarda o v2 desta thread na SUA linha
+        if (t == 0)
+            nthreads = omp_get_num_threads(); // novo -> só a thread 0 escreve, para não haver race
+    }
+
+    for (int t = 0; t < nthreads; t++) // novo -> já só há 1 thread; junta as somas de todas
+    {
+        psum += parciais[t][0];
+        v2sum += parciais[t][1];
     }
 
     V2_atual = v2sum;
