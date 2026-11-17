@@ -9,26 +9,32 @@
 #include <stdbool.h>
 #include <omp.h>
 
-#define MAXPART 5001
+#include "md.h"
 
+/* Soma de v^2 de todas as partículas no fim do último VelocityVerlet(); usada pelo
+   MeanSquaredVelocity() e pelo Kinetic() (que calculavam a mesma soma em 2 regiões
+   paralelas à parte). */
+static double V2_atual = 0.0;
+
+/* definição das variáveis globais (declaradas como extern em md.h) */
 int N;
 double sigma = 1.0, epsilon = 1.0, m = 1.0, kB = 1.0;
 double NA = 6.022140857e23;
 double kBSI = 1.38064852e-23;
 double L, Tinit;
 
-double rx[MAXPART], ry[MAXPART], rz[MAXPART];
-double vx[MAXPART], vy[MAXPART], vz[MAXPART];
-double ax[MAXPART], ay[MAXPART], az[MAXPART];
+double rx[MAXPART] __attribute__((aligned(256))), ry[MAXPART] __attribute__((aligned(256))), rz[MAXPART] __attribute__((aligned(256)));
+double vx[MAXPART] __attribute__((aligned(256))), vy[MAXPART] __attribute__((aligned(256))), vz[MAXPART] __attribute__((aligned(256)));
+double ax[MAXPART] __attribute__((aligned(256))), ay[MAXPART] __attribute__((aligned(256))), az[MAXPART] __attribute__((aligned(256)));
+#define MAX_THREADS 192
+static double parciais[MAX_THREADS][32] __attribute__((aligned(256)));
 
 char atype[10];
 
 void initialize(void);
 double VelocityVerlet(double dt, int iter, FILE *fp);
-void computeAccelerations(void);
 double gaussdist(void);
 void initializeVelocities(void);
-double Potential(void);
 double MeanSquaredVelocity(void);
 double Kinetic(void);
 
@@ -256,130 +262,12 @@ void initialize(void)
 
 double MeanSquaredVelocity(void)
 {
-    double sx = 0.0, sy = 0.0, sz = 0.0;
-
-#pragma omp parallel for reduction(+ : sx, sy, sz) schedule(static)
-    for (int i = 0; i < N; i++)
-    {
-        sx += vx[i] * vx[i];
-        sy += vy[i] * vy[i];
-        sz += vz[i] * vz[i];
-    }
-    return (sx + sy + sz) / N;
+    return V2_atual / N;
 }
 
 double Kinetic(void)
 {
-    double kin = 0.0;
-
-#pragma omp parallel for reduction(+ : kin) schedule(static)
-    for (int i = 0; i < N; i++)
-    {
-        kin += 0.5 * m * (vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]);
-    }
-    return kin;
-}
-
-/*
-static inline double potRow(int i, double sig2, double factor)
-{
-    const double xi = rx[i], yi = ry[i], zi = rz[i];
-    double sum_i = 0.0;
-
-#pragma omp simd reduction(+ : sum_i)
-    for (int j = i + 1; j < N; j++)
-    {
-        const double dx = xi - rx[j];
-        const double dy = yi - ry[j];
-        const double dz = zi - rz[j];
-        const double r2 = dx * dx + dy * dy + dz * dz;
-        const double q2 = sig2 / r2;
-        const double q6 = q2 * q2 * q2;
-        sum_i += factor * (q6 * q6 - q6);
-    }
-    return sum_i;
-}
-
-double Potential(void)
-{
-    double Pot = 0.0;
-    const double sig2 = sigma * sigma;
-    const double factor = 4.0 * epsilon;
-    const int R = N - 1;
-#pragma omp parallel for reduction(+ : Pot) schedule(static)
-    for (int k = 0; k < (R + 1) / 2; k++)
-    {
-        Pot += potRow(k, sig2, factor);
-        if (R - 1 - k != k)
-            Pot += potRow(R - 1 - k, sig2, factor);
-    }
-    return 2.0 * Pot;
-}
-*/
-
-double Potential(void)
-{
-    double Pot = 0.0;
-    const double sig2 = sigma * sigma;
-    const double factor = 4.0 * epsilon;
-
-#pragma omp parallel for reduction(+ : Pot) schedule(static, 1)
-    for (int i = 0; i < N - 1; i++)
-    {
-        const double xi = rx[i], yi = ry[i], zi = rz[i];
-        double sum_i = 0.0;
-
-#pragma omp simd reduction(+ : sum_i)
-        for (int j = i + 1; j < N; j++)
-        {
-            const double dx = xi - rx[j];
-            const double dy = yi - ry[j];
-            const double dz = zi - rz[j];
-            const double r2 = dx * dx + dy * dy + dz * dz;
-            const double q2 = sig2 / r2;
-            const double q6 = q2 * q2 * q2;
-            sum_i += factor * (q6 * q6 - q6);
-        }
-        Pot += sum_i;
-    }
-    return 2.0 * Pot; // O original conta cada par duas vezes, multiplicar para comparar
-}
-
-void computeAccelerations(void)
-{
-#pragma omp parallel for schedule(static)
-    for (int i = 0; i < N; i++)
-    {
-        const double xi = rx[i];
-        const double yi = ry[i];
-        const double zi = rz[i];
-        double fx = 0.0, fy = 0.0, fz = 0.0;
-
-#pragma omp simd reduction(+ : fx, fy, fz)
-        for (int j = 0; j < N; j++)
-        {
-            const double dx = xi - rx[j];
-            const double dy = yi - ry[j];
-            const double dz = zi - rz[j];
-
-            const double r2 = dx * dx + dy * dy + dz * dz;
-            /* seleção sem ramo: evita divisão por zero em j == i */
-            const double inv2 = (i == j) ? 0.0 : 1.0 / r2;
-            const double inv4 = inv2 * inv2;
-            const double inv8 = inv4 * inv4;
-            const double inv14 = inv8 * inv4 * inv2;
-
-            const double f = 24.0 * (2.0 * inv14 - inv8);
-
-            fx += dx * f;
-            fy += dy * f;
-            fz += dz * f;
-        }
-
-        ax[i] = fx;
-        ay[i] = fy;
-        az[i] = fz;
-    }
+    return 0.5 * m * V2_atual;
 }
 
 double VelocityVerlet(double dt, int iter, FILE *fp)
@@ -387,11 +275,11 @@ double VelocityVerlet(double dt, int iter, FILE *fp)
     (void)iter;
     (void)fp;
 
-    double psum = 0.0;
+    double psum = 0.0, v2sum = 0.0;
     const double half_dt = 0.5 * dt;
     const double half_dt2 = 0.5 * dt * dt;
 
-/* Primeira metade do passo: posições + primeira metade das velocidades. */
+// Primeira metade do passo: posições + primeira metade das velocidades.
 #pragma omp parallel for schedule(static)
     for (int i = 0; i < N; i++)
     {
@@ -406,48 +294,68 @@ double VelocityVerlet(double dt, int iter, FILE *fp)
 
     computeAccelerations();
 
-/* Segunda metade do passo + pressão nas paredes. */
-#pragma omp parallel for schedule(static) reduction(+ : psum)
-    for (int i = 0; i < N; i++)
+    int nthreads = 1; // novo -> quantas threads houve; fora do parallel omp_get_num_threads() dá 1
+#pragma omp parallel  // novo -> era "parallel for ... reduction(+ : psum, v2sum)"; agora só abre as threads
     {
-        vx[i] += ax[i] * half_dt;
-        vy[i] += ay[i] * half_dt;
-        vz[i] += az[i] * half_dt;
+        double ps = 0.0, v2 = 0.0; // novo -> somas locais de cada thread (privadas, cada uma tem as suas)
 
-        if (rx[i] < 0.0)
+#pragma omp for schedule(static) nowait // novo -> divide o ciclo; nowait porque a barreira do fim do parallel já chega
+        for (int i = 0; i < N; i++)
         {
-            vx[i] = -vx[i];
-            psum += 2.0 * m * fabs(vx[i]) / dt;
-        }
-        else if (rx[i] >= L)
-        {
-            vx[i] = -vx[i];
-            psum += 2.0 * m * fabs(vx[i]) / dt;
+            vx[i] += ax[i] * half_dt;
+            vy[i] += ay[i] * half_dt;
+            vz[i] += az[i] * half_dt;
+
+            if (rx[i] < 0.0)
+            {
+                vx[i] = -vx[i];
+                ps += 2.0 * m * fabs(vx[i]) / dt;
+            }
+            else if (rx[i] >= L)
+            {
+                vx[i] = -vx[i];
+                ps += 2.0 * m * fabs(vx[i]) / dt;
+            }
+
+            if (ry[i] < 0.0)
+            {
+                vy[i] = -vy[i];
+                ps += 2.0 * m * fabs(vy[i]) / dt;
+            }
+            else if (ry[i] >= L)
+            {
+                vy[i] = -vy[i];
+                ps += 2.0 * m * fabs(vy[i]) / dt;
+            }
+
+            if (rz[i] < 0.0)
+            {
+                vz[i] = -vz[i];
+                ps += 2.0 * m * fabs(vz[i]) / dt;
+            }
+            else if (rz[i] >= L)
+            {
+                vz[i] = -vz[i];
+                ps += 2.0 * m * fabs(vz[i]) / dt;
+            }
+
+            v2 += vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i];
         }
 
-        if (ry[i] < 0.0)
-        {
-            vy[i] = -vy[i];
-            psum += 2.0 * m * fabs(vy[i]) / dt;
-        }
-        else if (ry[i] >= L)
-        {
-            vy[i] = -vy[i];
-            psum += 2.0 * m * fabs(vy[i]) / dt;
-        }
-
-        if (rz[i] < 0.0)
-        {
-            vz[i] = -vz[i];
-            psum += 2.0 * m * fabs(vz[i]) / dt;
-        }
-        else if (rz[i] >= L)
-        {
-            vz[i] = -vz[i];
-            psum += 2.0 * m * fabs(vz[i]) / dt;
-        }
+        const int t = omp_get_thread_num(); // novo -> número desta thread (0..47)
+        parciais[t][0] = ps;                // novo -> guarda o ps desta thread na SUA linha
+        parciais[t][1] = v2;                // novo -> guarda o v2 desta thread na SUA linha
+        if (t == 0)
+            nthreads = omp_get_num_threads(); // novo -> só a thread 0 escreve, para não haver race
     }
 
+    for (int t = 0; t < nthreads; t++) // novo -> já só há 1 thread; junta as somas de todas
+    {
+        psum += parciais[t][0];
+        v2sum += parciais[t][1];
+    }
+
+    V2_atual = v2sum;
     return psum / (6.0 * L * L);
 }
 

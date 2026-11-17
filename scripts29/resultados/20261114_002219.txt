@@ -1,0 +1,59 @@
+################ INFO
+data:      Sat Nov 14 00:22:24 WET 2026
+nó:        cna0780.deucalion.macc.fccn.pt
+gcc:       gcc (GCC) 15.2.0
+threads:   48
+schedule:  (o que está no código)
+md5 src:   65ae80d7d1d9fea29dba4f44477e6ec1  src/MD.cpp 5817b54fa77c6e62b9cfea355aeb821c  src/forces.c 
+CFLAGS:    CFLAGS  = -O3 -ffast-math -fopenmp -mcpu=a64fx -msve-vector-bits=512
+KERNEL:    KERNEL_FLAGS = -mlow-precision-div
+
+################ THREADS=48
+======== RUN 1: perf stat (tempo total + contadores)
+
+ Performance counter stats for './md':
+
+          10503.39 msec task-clock                #   43.002 CPUs utilized          
+       20999737003      cycles                    #    1.999 GHz                      (97.76%)
+       32623641857      instructions              #    1.55  insn per cycle           (97.72%)
+        5193811050      L1-dcache-loads           #  494.489 M/sec                    (97.72%)
+         244948989      L1-dcache-load-misses     #    4.72% of all L1-dcache accesses  (97.73%)
+        2137187697      br_pred                   #  203.476 M/sec                    (97.81%)
+           9439567      br_mis_pred               #    0.899 M/sec                    (98.14%)
+          56589531      fp_dp_fixed_ops_spec      #    5.388 M/sec                    (97.20%)
+       41772974236      fp_dp_scale_ops_spec      # 3977.093 M/sec                    (96.86%)
+
+       0.244253485 seconds time elapsed
+
+      10.478708000 seconds user
+       0.019752000 seconds sys
+
+
+======== RUN 2: perf record + report (% por função)
+    89.81%  md_prof             [.] computeAccelerations._omp_fn.0
+     4.60%  libgomp.so.1.0.0    [.] gomp_barrier_wait_end
+     4.12%  libgomp.so.1.0.0    [.] gomp_team_barrier_wait_end
+     0.69%  libgomp.so.1.0.0    [.] __aarch64_ldadd4_acq_rel
+     0.23%  libgomp.so.1.0.0    [.] gomp_barrier_wait
+     0.20%  md_prof             [.] VelocityVerlet._omp_fn.0
+     0.10%  md_prof             [.] VelocityVerlet._omp_fn.1
+     0.10%  libgomp.so.1.0.0    [.] gomp_team_barrier_wait_final
+     0.08%  libgomp.so.1.0.0    [.] gomp_thread_start
+     0.06%  libgomp.so.1.0.0    [.] gomp_team_start
+     0.01%  libc-2.28.so        [.] __mpn_divrem
+     0.01%  libgomp.so.1.0.0    [.] gomp_resolve_num_threads
+     0.00%  md_prof             [.] gaussdist
+     0.00%  ld-2.28.so          [.] do_lookup_x
+     0.00%  libc-2.28.so        [.] __ctype_init
+     0.00%  libc-2.28.so        [.] getenv
+     0.00%  ld-2.28.so          [.] __GI___tunables_init
+     0.00%  libpthread-2.28.so  [.] __ctype_init@plt
+     0.00%  libpthread-2.28.so  [.] start_thread
+     0.00%  libgomp.so.1.0.0    [.] gomp_init_affinity
+     0.00%  ld-2.28.so          [.] _dl_start
+     0.00%  libc-2.28.so        [.] __clone
+     0.00%  ld-2.28.so          [.] _start
+     0.00%  libpthread-2.28.so  [.] pthread_setaffinity_np@@GLIBC_2.17
+     0.00%  [unknown]           [k] 0xffff000010081504
+
+################ FIM
